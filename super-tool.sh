@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 2.7
+#   版本: 2.8
 #====================================================
 
 # 颜色定义
@@ -1628,7 +1628,14 @@ get_ovpn_config() {
     
     local OVPN_FILENAME
     while true; do
-        read -p "$(echo -e ${YELLOW}"请输入您想创建的 OpenVPN 配置文件名 (例如: my-vpn.conf): "${NC})" OVPN_FILENAME
+        read -p "$(echo -e ${YELLOW}"请输入您想创建的 OpenVPN 配置文件名 (默认: my-vpn.conf): "${NC})" OVPN_FILENAME
+        
+        # 如果用户直接按回车，使用默认值
+        if [[ -z "$OVPN_FILENAME" ]]; then
+            OVPN_FILENAME="my-vpn.conf"
+            echo -e "${GREEN}使用默认文件名: $OVPN_FILENAME${NC}"
+        fi
+        
         if [[ "$OVPN_FILENAME" =~ \.conf$ || "$OVPN_FILENAME" =~ \.ovpn$ ]]; then
             break
         else
@@ -1652,9 +1659,9 @@ get_ovpn_config() {
 
     # 创建配置文件，在顶部添加加密算法配置
     cat << CIPHER_EOF > "$OVPN_CONFIG_FILE"
-# 允许旧版 CBC 算法作备用，保持现代算法优先
-data-ciphers          AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-256-CBC
-data-ciphers-fallback AES-256-CBC
+# 放在 client 配置最顶部
+data-ciphers          AES-256-GCM:AES-128-GCM:AES-256-CBC:AES-128-CBC
+data-ciphers-fallback AES-128-CBC
 
 CIPHER_EOF
     
@@ -1771,6 +1778,72 @@ EOL
     echo -e "${GREEN}  -> 已添加 script-security, up, 和 down 指令。${NC}"
 }
 
+# 自动重启OpenVPN服务并验证
+restart_and_verify_openvpn() {
+    echo -e "\n${GREEN}================= 配置完成! =================${NC}"
+    echo -e "${YELLOW}所有配置已自动完成。正在自动重启 OpenVPN 服务...${NC}"
+    
+    # 停止可能正在运行的服务
+    systemctl stop openvpn-client@${OVPN_SERVICE_NAME}.service >/dev/null 2>&1
+    
+    # 重新加载systemd配置
+    systemctl daemon-reload
+    
+    # 启动OpenVPN服务
+    echo -e "${YELLOW}正在启动 OpenVPN 服务: openvpn-client@${OVPN_SERVICE_NAME}.service${NC}"
+    if systemctl start openvpn-client@${OVPN_SERVICE_NAME}.service; then
+        echo -e "${GREEN}OpenVPN 服务启动成功${NC}"
+    else
+        echo -e "${RED}OpenVPN 服务启动失败，请检查配置${NC}"
+        return 1
+    fi
+    
+    # 等待服务稳定
+    echo -e "${YELLOW}等待 15 秒让服务稳定...${NC}"
+    sleep 15
+    
+    # 检查服务状态
+    echo -e "\n${YELLOW}检查服务状态:${NC}"
+    systemctl status openvpn-client@${OVPN_SERVICE_NAME}.service --no-pager -l
+    
+    # 验证连接
+    echo -e "\n${GREEN}================= 连接验证 =================${NC}"
+    echo -e "${YELLOW}验证 SSH 连接状态:${NC}"
+    if [[ -n "$SSH_CLIENT" ]]; then
+        echo -e "${GREEN}✓ SSH 连接正常 (连接来源: ${SSH_CLIENT%% *})${NC}"
+    else
+        echo -e "${YELLOW}! 无法检测到 SSH 连接信息${NC}"
+    fi
+    
+    echo -e "\n${YELLOW}检查当前外网IP地址:${NC}"
+    local current_ip
+    current_ip=$(timeout 10 curl -s ip.sb)
+    if [[ -n "$current_ip" ]]; then
+        echo -e "${GREEN}当前外网IP: $current_ip${NC}"
+        echo -e "${CYAN}如果这是您的 VPN 服务器 IP，说明 VPN 连接成功${NC}"
+    else
+        echo -e "${YELLOW}无法获取外网IP，尝试备用方法...${NC}"
+        current_ip=$(timeout 10 curl -s ifconfig.me)
+        if [[ -n "$current_ip" ]]; then
+            echo -e "${GREEN}当前外网IP: $current_ip${NC}"
+            echo -e "${CYAN}如果这是您的 VPN 服务器 IP，说明 VPN 连接成功${NC}"
+        else
+            echo -e "${RED}无法获取外网IP地址，请手动检查网络连接${NC}"
+        fi
+    fi
+    
+    echo -e "\n${GREEN}================= 验证完成 =================${NC}"
+    echo -e "${YELLOW}说明:${NC}"
+    echo -e "1. ${GREEN}您的 SSH 连接应该没有断开${NC}"
+    echo -e "2. ${GREEN}显示的IP应该是您的 VPN 服务器 IP${NC}"
+    echo -e "3. ${CYAN}可以从其他机器 ping 您的服务器公网 IP 来验证连通性${NC}"
+    echo -e "\n${YELLOW}管理命令:${NC}"
+    echo -e "• 查看服务状态: ${CYAN}sudo systemctl status openvpn-client@${OVPN_SERVICE_NAME}.service${NC}"
+    echo -e "• 停止服务: ${CYAN}sudo systemctl stop openvpn-client@${OVPN_SERVICE_NAME}.service${NC}"
+    echo -e "• 重启服务: ${CYAN}sudo systemctl restart openvpn-client@${OVPN_SERVICE_NAME}.service${NC}"
+    echo -e "• 查看日志: ${CYAN}sudo journalctl -u openvpn-client@${OVPN_SERVICE_NAME}.service -f${NC}"
+}
+
 # --- 主逻辑 ---
 main() {
     echo -e "${GREEN}=====================================================${NC}"
@@ -1784,19 +1857,7 @@ main() {
     setup_routing_table
     create_route_scripts
     modify_ovpn_config
-
-    echo -e "\n${GREEN}================= 配置完成! =================${NC}"
-    echo -e "所有配置已自动完成。现在，请重启 OpenVPN 服务来应用更改。"
-    echo -e "\n${YELLOW}请运行以下命令来启动/重启您的VPN连接:${NC}"
-    echo -e "sudo systemctl restart openvpn-client@${OVPN_SERVICE_NAME}.service"
-    
-    echo -e "\n${YELLOW}等待大约 15 秒后，运行以下命令检查服务状态:${NC}"
-    echo -e "sudo systemctl status openvpn-client@${OVPN_SERVICE_NAME}.service"
-    
-    echo -e "\n${YELLOW}最后，通过以下方式进行验证:${NC}"
-    echo -e "1. 您的 SSH 连接应该没有断开。"
-    echo -e "2. 在服务器上运行 ${GREEN}curl ip.sb${NC} 或 ${GREEN}curl ifconfig.me${NC}，显示的应该是您的 VPN 服务器 IP。"
-    echo -e "3. 从另一台机器 ${GREEN}ping ${NC} 您的服务器公网 IP，应该能够 ping 通。"
+    restart_and_verify_openvpn
 }
 
 # 执行主函数
@@ -1953,7 +2014,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v2.7)${plain}
+  ${green}多功能服务器工具脚本 (v2.8)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
