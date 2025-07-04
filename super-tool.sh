@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.3
+#   版本: 3.4
 #====================================================
 
 # 颜色定义
@@ -1891,44 +1891,44 @@ restart_and_verify_openvpn() {
 select_existing_config() {
     OVPN_CLIENT_DIR="/etc/openvpn/client"
     
-    if [[ ! -d "\$OVPN_CLIENT_DIR" ]]; then
-        echo -e "\${RED}错误：OpenVPN客户端目录不存在: \$OVPN_CLIENT_DIR\${NC}"
+    if [[ ! -d "$OVPN_CLIENT_DIR" ]]; then
+        echo -e "\${RED}错误：OpenVPN客户端目录不存在: $OVPN_CLIENT_DIR\${NC}"
         exit 1
     fi
     
     # 查找现有的配置文件
     local config_files=()
     while IFS= read -r -d '' file; do
-        config_files+=("\$(basename "\$file")")
-    done < <(find "\$OVPN_CLIENT_DIR" -name "*.conf" -o -name "*.ovpn" -print0 2>/dev/null)
+        config_files+=("$(basename "$file")")
+    done < <(find "$OVPN_CLIENT_DIR" -name "*.conf" -o -name "*.ovpn" -print0 2>/dev/null)
     
-    if [[ \${#config_files[@]} -eq 0 ]]; then
-        echo -e "\${RED}错误：在 \$OVPN_CLIENT_DIR 中未找到任何 .conf 或 .ovpn 配置文件\${NC}"
+    if [[ ${#config_files[@]} -eq 0 ]]; then
+        echo -e "\${RED}错误：在 $OVPN_CLIENT_DIR 中未找到任何 .conf 或 .ovpn 配置文件\${NC}"
         echo -e "\${YELLOW}请先使用模式1创建配置文件，或手动放置配置文件到该目录\${NC}"
         exit 1
     fi
     
     echo -e "\${YELLOW}找到以下配置文件：\${NC}"
-    for i in "\${!config_files[@]}"; do
-        echo -e "  \${CYAN}\$((i+1)).  \${config_files[i]}\${NC}"
+    for i in "${!config_files[@]}"; do
+        echo -e "  \${CYAN}$((i+1)).  ${config_files[i]}\${NC}"
     done
     
     local choice
     while true; do
-        read -p "\$(echo -e \${YELLOW}"请选择要修改的配置文件 [1-\${#config_files[@]}]: "\${NC})" choice
-        if [[ "\$choice" =~ ^[0-9]+\$ ]] && [[ "\$choice" -ge 1 ]] && [[ "\$choice" -le "\${#config_files[@]}" ]]; then
+        read -p "$(echo -e \${YELLOW}"请选择要修改的配置文件 [1-${#config_files[@]}]: "\${NC})" choice
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#config_files[@]}" ]]; then
             break
         else
-            echo -e "\${RED}无效选择，请输入 1-\${#config_files[@]} 之间的数字\${NC}"
+            echo -e "\${RED}无效选择，请输入 1-${#config_files[@]} 之间的数字\${NC}"
         fi
     done
     
-    local selected_file="\${config_files[\$((choice-1))]}"
-    OVPN_CONFIG_FILE="\$OVPN_CLIENT_DIR/\$selected_file"
-    OVPN_SERVICE_NAME=\$(basename "\$selected_file" | sed 's/\.conf\$//' | sed 's/\.ovpn\$//')
+    local selected_file="${config_files[$((choice-1))]}"
+    OVPN_CONFIG_FILE="$OVPN_CLIENT_DIR/$selected_file"
+    OVPN_SERVICE_NAME=$(basename "$selected_file" | sed 's/\.conf$//' | sed 's/\.ovpn$//')
     
-    echo -e "\${GREEN}  -> 选择的配置文件: \$OVPN_CONFIG_FILE\${NC}"
-    echo -e "\${GREEN}  -> 对应的服务名: \$OVPN_SERVICE_NAME\${NC}"
+    echo -e "\${GREEN}  -> 选择的配置文件: $OVPN_CONFIG_FILE\${NC}"
+    echo -e "\${GREEN}  -> 对应的服务名: $OVPN_SERVICE_NAME\${NC}"
 }
 
 # --- 主逻辑 ---
@@ -2113,7 +2113,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.3)${plain}
+  ${green}多功能服务器工具脚本 (v3.4)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
