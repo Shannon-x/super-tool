@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.1
+#   版本: 3.2
 #====================================================
 
 # 颜色定义
@@ -1652,49 +1652,64 @@ get_ovpn_config() {
     OVPN_CLIENT_DIR="/etc/openvpn/client"
     mkdir -p "$OVPN_CLIENT_DIR"
     
+    # 选择输入方式
+    echo -e "${yellow}请选择配置来源：${plain}"
+    echo -e "  ${cyan}1.${plain} 粘贴配置内容 (默认)"
+    echo -e "  ${cyan}2.${plain} 读取服务器上已有的 .conf/.ovpn 文件"
+    local cfg_mode
+    read -rp "请选择 [1-2] (默认1): " cfg_mode
+    [[ -z "$cfg_mode" ]] && cfg_mode="1"
+
     local OVPN_FILENAME
     while true; do
-        read -p "$(echo -e ${YELLOW}"请输入您想创建的 OpenVPN 配置文件名 (默认: my-vpn.conf): "${NC})" OVPN_FILENAME
-        
-        # 如果用户直接按回车，使用默认值
-        if [[ -z "$OVPN_FILENAME" ]]; then
-            OVPN_FILENAME="my-vpn.conf"
-            echo -e "${GREEN}使用默认文件名: $OVPN_FILENAME${NC}"
-        fi
-        
+        read -p "$(echo -e ${YELLOW}"请输入生成的配置文件名 (默认: my-vpn.conf): "${NC})" OVPN_FILENAME
+        [[ -z "$OVPN_FILENAME" ]] && OVPN_FILENAME="my-vpn.conf"
         if [[ "$OVPN_FILENAME" =~ \.conf$ || "$OVPN_FILENAME" =~ \.ovpn$ ]]; then
             break
         else
-            echo -e "${RED}错误：文件名必须以 '.conf' 或 '.ovpn' 结尾。请重新输入。${NC}"
+            echo -e "${RED}文件名必须以 .conf 或 .ovpn 结尾${NC}"
         fi
     done
 
     OVPN_CONFIG_FILE="$OVPN_CLIENT_DIR/$OVPN_FILENAME"
     OVPN_SERVICE_NAME=$(basename "$OVPN_FILENAME" | sed 's/\.conf$//' | sed 's/\.ovpn$//')
 
-    echo -e "${YELLOW}请将您的 OpenVPN 配置文件的【全部内容】粘贴到下面。"
-    echo -e "粘贴完成后，另起一个新行，然后按下 ${GREEN}Ctrl+D${YELLOW} 来结束输入。${NC}"
-    
-    local OVPN_CONTENT
-    OVPN_CONTENT=$(cat)
-
-    if [ -z "$OVPN_CONTENT" ]; then
-        echo -e "${RED}错误：没有接收到任何内容。请重新运行脚本。${NC}"
-        exit 1
+    if [[ "$cfg_mode" == "2" ]]; then
+        # 读取现有文件
+        read -rp "请输入现有 .conf/.ovpn 文件的完整路径: " src_path
+        if [[ ! -f "$src_path" ]]; then
+            echo -e "${red}错误：文件不存在${NC}"
+            exit 1
+        fi
+        cp "$src_path" "$OVPN_CONFIG_FILE"
+        echo -e "${green}已复制配置文件到: $OVPN_CONFIG_FILE${NC}"
+    else
+        # 粘贴模式
+        echo -e "${YELLOW}请粘贴您的 OpenVPN 配置，完成后按 Ctrl+D 结束输入${NC}"
+        echo -e "${cyan}(提示：若 60 秒内无输入，将取消操作)${plain}"
+        local OVPN_CONTENT=""
+        local start_ts=$(date +%s)
+        while IFS= read -r -t 10 line; do
+            OVPN_CONTENT+="$line\n"
+            start_ts=$(date +%s) # 重置计时器
+        done
+        # 超时检测
+        local now_ts=$(date +%s)
+        if [[ -z "$OVPN_CONTENT" ]]; then
+            echo -e "${red}60 秒内未接收到任何内容，已取消${NC}"
+            exit 1
+        fi
+        # 写入
+        printf "%b" "$OVPN_CONTENT" > "$OVPN_CONFIG_FILE.tmp"
+        mv "$OVPN_CONFIG_FILE.tmp" "$OVPN_CONFIG_FILE"
     fi
 
-    # 创建配置文件，在顶部添加加密算法配置
-    cat << CIPHER_EOF > "$OVPN_CONFIG_FILE"
-# 放在 client 配置最顶部
-data-ciphers          AES-256-GCM:AES-128-GCM:AES-256-CBC:AES-128-CBC
-data-ciphers-fallback AES-128-CBC
+    # 在顶部追加加密算法行（若尚未添加）
+    if ! grep -q "^data-ciphers" "$OVPN_CONFIG_FILE"; then
+        sed -i '1i # 放在 client 配置最顶部\ndata-ciphers          AES-256-GCM:AES-128-GCM:AES-256-CBC:AES-128-CBC\ndata-ciphers-fallback AES-128-CBC\n' "$OVPN_CONFIG_FILE"
+    fi
 
-CIPHER_EOF
-    
-    # 添加用户提供的配置内容
-    echo "$OVPN_CONTENT" >> "$OVPN_CONFIG_FILE"
-    echo -e "${GREEN}  -> 配置已成功保存到: $OVPN_CONFIG_FILE${NC}"
-    echo -e "${GREEN}  -> 已自动添加优化的加密算法配置${NC}"
+    echo -e "${green}  -> 配置文件准备完成: $OVPN_CONFIG_FILE${NC}"
 }
 
 
@@ -1824,10 +1839,12 @@ restart_and_verify_openvpn() {
         return 1
     fi
     
-    # 等待服务稳定
-    echo -e "${YELLOW}等待 15 秒让服务稳定...${NC}"
+    echo -e "${yellow}实时输出 OpenVPN 日志 (15 秒)...${plain}"
+    journalctl -fu openvpn-client@${OVPN_SERVICE_NAME}.service --since "now" &
+    local jpid=$!
     sleep 15
-    
+    kill $jpid >/dev/null 2>&1
+     
     # 检查服务状态
     echo -e "\n${YELLOW}检查服务状态:${NC}"
     systemctl status openvpn-client@${OVPN_SERVICE_NAME}.service --no-pager -l
@@ -2096,7 +2113,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.1)${plain}
+  ${green}多功能服务器工具脚本 (v3.2)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
