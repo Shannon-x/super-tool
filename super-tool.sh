@@ -13,9 +13,10 @@
 #   功能 8: 执行网络测速
 #   功能 9: 设置isufe快捷命令
 #   功能 10: 一键式OpenVPN策略路由设置
+#   功能 11: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 2.5
+#   版本: 2.6
 #====================================================
 
 # 颜色定义
@@ -1521,22 +1522,84 @@ check_root() {
     fi
 }
 
+# 自动安装缺失的依赖
+install_dependencies() {
+    echo -e "${YELLOW}正在自动安装缺失的依赖项...${NC}"
+    
+    # 检测系统类型
+    if command -v apt-get >/dev/null 2>&1; then
+        # Debian/Ubuntu系统
+        echo -e "${GREEN}检测到Debian/Ubuntu系统，使用apt-get安装依赖${NC}"
+        apt-get update -y
+        apt-get install -y openvpn iptables iproute2
+    elif command -v yum >/dev/null 2>&1; then
+        # CentOS/RHEL系统
+        echo -e "${GREEN}检测到CentOS/RHEL系统，使用yum安装依赖${NC}"
+        yum install -y epel-release
+        yum install -y openvpn iptables iproute
+    elif command -v dnf >/dev/null 2>&1; then
+        # Fedora系统
+        echo -e "${GREEN}检测到Fedora系统，使用dnf安装依赖${NC}"
+        dnf install -y openvpn iptables iproute
+    elif command -v pacman >/dev/null 2>&1; then
+        # Arch Linux系统
+        echo -e "${GREEN}检测到Arch Linux系统，使用pacman安装依赖${NC}"
+        pacman -Sy --noconfirm openvpn iptables iproute2
+    elif command -v apk >/dev/null 2>&1; then
+        # Alpine Linux系统
+        echo -e "${GREEN}检测到Alpine Linux系统，使用apk安装依赖${NC}"
+        apk update
+        apk add openvpn iptables iproute2
+    else
+        echo -e "${RED}无法检测到支持的包管理器，请手动安装依赖：openvpn iptables iproute2${NC}"
+        exit 1
+    fi
+    
+    echo -e "${GREEN}依赖安装完成${NC}"
+}
+
 # 检查所需的依赖命令
 check_dependencies() {
     echo -e "${YELLOW}正在检查依赖项...${NC}"
     local missing_deps=0
+    local missing_packages=()
+    
     for cmd in openvpn iptables ip; do
         if ! command -v "$cmd" &> /dev/null; then
-            echo -e "${RED}  -> 依赖 '$cmd' 未找到。请先安装它。${NC}"
+            echo -e "${RED}  -> 依赖 '$cmd' 未找到${NC}"
             missing_deps=1
+            missing_packages+=("$cmd")
         else
-            echo -e "${GREEN}  -> 依赖 '$cmd' 已找到。${NC}"
+            echo -e "${GREEN}  -> 依赖 '$cmd' 已找到${NC}"
         fi
     done
 
     if [ "$missing_deps" -eq 1 ]; then
-        echo -e "${RED}请安装缺失的依赖项后重试 (例如: sudo apt-get update && sudo apt-get install openvpn iptables iproute2)。${NC}"
-        exit 1
+        echo -e "${YELLOW}发现缺失的依赖项: ${missing_packages[*]}${NC}"
+        read -p "$(echo -e ${YELLOW}"是否自动安装缺失的依赖项？(y/n): "${NC})" auto_install
+        
+        if [[ "$auto_install" == [Yy] ]]; then
+            install_dependencies
+            
+            # 再次检查依赖是否安装成功
+            echo -e "${YELLOW}验证依赖安装结果...${NC}"
+            for cmd in openvpn iptables ip; do
+                if ! command -v "$cmd" &> /dev/null; then
+                    echo -e "${RED}  -> 依赖 '$cmd' 安装失败${NC}"
+                    echo -e "${RED}请手动安装后重试${NC}"
+                    exit 1
+                else
+                    echo -e "${GREEN}  -> 依赖 '$cmd' 安装成功${NC}"
+                fi
+            done
+        else
+            echo -e "${RED}请手动安装缺失的依赖项后重试${NC}"
+            echo -e "${YELLOW}安装命令示例：${NC}"
+            echo -e "${CYAN}  Ubuntu/Debian: sudo apt-get update && sudo apt-get install openvpn iptables iproute2${NC}"
+            echo -e "${CYAN}  CentOS/RHEL: sudo yum install epel-release && sudo yum install openvpn iptables iproute${NC}"
+            echo -e "${CYAN}  Fedora: sudo dnf install openvpn iptables iproute${NC}"
+            exit 1
+        fi
     fi
 }
 
@@ -1742,12 +1805,108 @@ EOF
 }
 
 ############################################################
+# 选项 11: 更新脚本到最新版本
+############################################################
+
+update_script() {
+    echo -e "${green}=== 更新脚本到最新版本 ===${plain}"
+    
+    echo -e "${yellow}此功能将从GitHub仓库下载最新版本的脚本${plain}"
+    echo -e "${cyan}更新源: https://github.com/Shannon-x/super-tool${plain}"
+    
+    read -rp "确认更新脚本到最新版本？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}更新已取消${plain}"
+        return 0
+    fi
+    
+    echo -e "\n${green}开始更新脚本...${plain}"
+    
+    # 获取当前脚本的完整路径
+    local current_script=$(realpath "$0")
+    local script_dir=$(dirname "$current_script")
+    local script_name=$(basename "$current_script")
+    local backup_name="${script_name}.backup.$(date +%Y%m%d_%H%M%S)"
+    
+    echo -e "${yellow}当前脚本路径: $current_script${plain}"
+    
+    # 备份当前脚本
+    echo -e "${yellow}备份当前脚本...${plain}"
+    if cp "$current_script" "$script_dir/$backup_name"; then
+        echo -e "${green}备份成功: $script_dir/$backup_name${plain}"
+    else
+        echo -e "${red}备份失败，更新中止${plain}"
+        return 1
+    fi
+    
+    # 下载最新版本
+    echo -e "${yellow}正在下载最新版本...${plain}"
+    local temp_script="/tmp/super-tool-latest.sh"
+    
+    if curl -L -o "$temp_script" "https://raw.githubusercontent.com/Shannon-x/super-tool/master/super-tool.sh"; then
+        echo -e "${green}下载成功${plain}"
+    else
+        echo -e "${red}下载失败，请检查网络连接${plain}"
+        return 1
+    fi
+    
+    # 检查下载的文件是否有效
+    if [[ ! -s "$temp_script" ]]; then
+        echo -e "${red}下载的文件为空，更新失败${plain}"
+        rm -f "$temp_script"
+        return 1
+    fi
+    
+    # 检查语法
+    echo -e "${yellow}检查新脚本语法...${plain}"
+    if bash -n "$temp_script"; then
+        echo -e "${green}语法检查通过${plain}"
+    else
+        echo -e "${red}新脚本语法检查失败，更新中止${plain}"
+        rm -f "$temp_script"
+        return 1
+    fi
+    
+    # 替换当前脚本
+    echo -e "${yellow}替换当前脚本...${plain}"
+    if cp "$temp_script" "$current_script"; then
+        chmod +x "$current_script"
+        echo -e "${green}脚本更新成功！${plain}"
+        
+        # 检查新版本号
+        echo -e "${yellow}检查新版本信息...${plain}"
+        if grep -q "版本:" "$current_script"; then
+            local new_version=$(grep "版本:" "$current_script" | head -1 | sed 's/.*版本: //' | sed 's/ *$//')
+            echo -e "${green}新版本: $new_version${plain}"
+        fi
+        
+        echo -e "\n${cyan}更新完成！${plain}"
+        echo -e "${yellow}备份文件保存在: $script_dir/$backup_name${plain}"
+        echo -e "${yellow}请重新运行脚本以使用最新版本${plain}"
+        
+        # 清理临时文件
+        rm -f "$temp_script"
+        
+        # 提示用户重新运行
+        read -rp "是否立即重新运行新版本脚本？(y/n): " restart
+        if [[ "$restart" == [Yy] ]]; then
+            echo -e "${green}正在重新运行脚本...${plain}"
+            exec "$current_script"
+        fi
+    else
+        echo -e "${red}替换脚本失败${plain}"
+        rm -f "$temp_script"
+        return 1
+    fi
+}
+
+############################################################
 # 主菜单和脚本执行逻辑
 ############################################################
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v2.5)${plain}
+  ${green}多功能服务器工具脚本 (v2.6)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
@@ -1760,8 +1919,9 @@ show_menu() {
   ${yellow}8.${plain} 执行网络测速
   ${yellow}9.${plain} 设置isufe快捷命令
   ${yellow}10.${plain} 一键式OpenVPN策略路由设置
+  ${yellow}11.${plain} 更新脚本到最新版本
   ---"
-    read -rp "请输入选项 [0-10]: " choice
+    read -rp "请输入选项 [0-11]: " choice
     
     case $choice in
         0)
@@ -1813,8 +1973,11 @@ show_menu() {
         10)
             setup_openvpn_routing
             ;;
+        11)
+            update_script
+            ;;
         *)
-            echo -e "${red}无效的选项，请输入 0-10${plain}"
+            echo -e "${red}无效的选项，请输入 0-11${plain}"
             ;;
     esac
 }
