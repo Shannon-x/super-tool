@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 2.9
+#   版本: 3.0
 #====================================================
 
 # 颜色定义
@@ -2096,7 +2096,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v2.9)${plain}
+  ${green}多功能服务器工具脚本 (v3.0)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
@@ -2178,30 +2178,168 @@ show_menu() {
 
 # 设置isufe快捷命令
 setup_isufe_command() {
+    echo -e "${green}=== 设置isufe快捷命令 ===${plain}"
+    
     local script_path=$(realpath "$0")
     local target_path="/usr/local/bin/isufe"
+    local current_user=$(whoami)
     
-    if [[ -L "$target_path" ]] || [[ -f "$target_path" ]]; then
-        echo -e "${yellow}isufe 命令已存在${plain}"
-        return 0
-    fi
+    echo -e "${yellow}当前脚本路径: $script_path${plain}"
+    echo -e "${yellow}目标安装路径: $target_path${plain}"
+    echo -e "${yellow}当前用户: $current_user${plain}"
     
-    echo -e "\n${cyan}是否设置 'isufe' 快捷命令？${plain}"
-    echo -e "${yellow}设置后您可以在任何目录下输入 'isufe' 来启动此脚本${plain}"
-    read -rp "设置快捷命令？(y/n): " setup_cmd
-    
-    if [[ "$setup_cmd" == [Yy] ]]; then
-        if ln -sf "$script_path" "$target_path"; then
-            chmod +x "$target_path"
-            echo -e "${green}快捷命令设置成功！${plain}"
-            echo -e "${cyan}现在您可以在任何地方输入 'isufe' 来启动脚本${plain}"
+    # 检查现有安装状态
+    if [[ -L "$target_path" ]]; then
+        local link_target=$(readlink "$target_path")
+        echo -e "${yellow}检测到现有符号链接: $target_path -> $link_target${plain}"
+        
+        if [[ "$link_target" == "$script_path" ]]; then
+            echo -e "${green}符号链接已正确设置${plain}"
         else
-            echo -e "${red}快捷命令设置失败，可能需要root权限${plain}"
-            echo -e "${yellow}手动设置命令：${plain}"
-            echo -e "${cyan}sudo ln -sf $script_path $target_path${plain}"
-            echo -e "${cyan}sudo chmod +x $target_path${plain}"
+            echo -e "${yellow}符号链接指向不同的文件，将重新设置${plain}"
         fi
+    elif [[ -f "$target_path" ]]; then
+        echo -e "${yellow}检测到现有文件: $target_path${plain}"
     fi
+    
+    # 检查PATH环境变量
+    if echo "$PATH" | grep -q "/usr/local/bin"; then
+        echo -e "${green}✓ /usr/local/bin 已在PATH中${plain}"
+    else
+        echo -e "${red}✗ /usr/local/bin 不在PATH中${plain}"
+        echo -e "${yellow}建议将以下内容添加到 ~/.bashrc 或 ~/.profile:${plain}"
+        echo -e "${cyan}export PATH=/usr/local/bin:\$PATH${plain}"
+    fi
+    
+    # 询问用户是否设置
+    echo -e "\n${cyan}设置 'isufe' 快捷命令的选项：${plain}"
+    echo -e "  ${cyan}1.${plain} 设置到 /usr/local/bin/isufe (推荐)"
+    echo -e "  ${cyan}2.${plain} 设置到 /usr/bin/isufe (系统目录)"
+    echo -e "  ${cyan}3.${plain} 添加别名到当前用户配置"
+    echo -e "  ${cyan}4.${plain} 取消设置"
+    
+    local setup_choice
+    read -rp "请选择设置方式 [1-4] (默认1): " setup_choice
+    
+    if [[ -z "$setup_choice" ]]; then
+        setup_choice="1"
+    fi
+    
+    case $setup_choice in
+        1)
+            echo -e "\n${green}设置到 /usr/local/bin/isufe${plain}"
+            if ln -sf "$script_path" "$target_path" 2>/dev/null; then
+                chmod +x "$target_path" 2>/dev/null
+                echo -e "${green}✓ 快捷命令设置成功！${plain}"
+                test_isufe_command "$target_path"
+            else
+                echo -e "${red}✗ 设置失败，尝试使用sudo权限...${plain}"
+                if sudo ln -sf "$script_path" "$target_path"; then
+                    sudo chmod +x "$target_path"
+                    echo -e "${green}✓ 快捷命令设置成功！${plain}"
+                    test_isufe_command "$target_path"
+                else
+                    echo -e "${red}✗ 设置失败${plain}"
+                    show_manual_setup "$script_path" "$target_path"
+                fi
+            fi
+            ;;
+        2)
+            local target_path_sys="/usr/bin/isufe"
+            echo -e "\n${green}设置到 /usr/bin/isufe${plain}"
+            if sudo ln -sf "$script_path" "$target_path_sys"; then
+                sudo chmod +x "$target_path_sys"
+                echo -e "${green}✓ 快捷命令设置成功！${plain}"
+                test_isufe_command "$target_path_sys"
+            else
+                echo -e "${red}✗ 设置失败${plain}"
+                show_manual_setup "$script_path" "$target_path_sys"
+            fi
+            ;;
+        3)
+            echo -e "\n${green}添加别名到用户配置${plain}"
+            setup_alias "$script_path"
+            ;;
+        4)
+            echo -e "${yellow}已取消设置${plain}"
+            return 0
+            ;;
+        *)
+            echo -e "${red}无效选择，已取消设置${plain}"
+            return 1
+            ;;
+    esac
+}
+
+# 测试isufe命令
+test_isufe_command() {
+    local cmd_path="$1"
+    echo -e "\n${yellow}测试命令...${plain}"
+    
+    if [[ -x "$cmd_path" ]]; then
+        echo -e "${green}✓ 文件存在且可执行${plain}"
+    else
+        echo -e "${red}✗ 文件不存在或不可执行${plain}"
+        return 1
+    fi
+    
+    if command -v isufe >/dev/null 2>&1; then
+        echo -e "${green}✓ isufe 命令可以找到${plain}"
+        echo -e "${cyan}命令位置: $(which isufe)${plain}"
+        echo -e "${green}现在您可以在任何地方输入 'isufe' 来启动脚本${plain}"
+    else
+        echo -e "${red}✗ isufe 命令无法找到${plain}"
+        echo -e "${yellow}可能需要重新加载环境变量或重新登录${plain}"
+        echo -e "${cyan}尝试运行: source ~/.bashrc 或重新登录${plain}"
+    fi
+}
+
+# 设置别名
+setup_alias() {
+    local script_path="$1"
+    local shell_rc=""
+    
+    # 检测用户的shell
+    if [[ "$SHELL" == *"bash"* ]]; then
+        shell_rc="$HOME/.bashrc"
+    elif [[ "$SHELL" == *"zsh"* ]]; then
+        shell_rc="$HOME/.zshrc"
+    else
+        shell_rc="$HOME/.profile"
+    fi
+    
+    echo -e "${yellow}检测到shell: $SHELL${plain}"
+    echo -e "${yellow}将添加别名到: $shell_rc${plain}"
+    
+    # 检查是否已存在别名
+    if [[ -f "$shell_rc" ]] && grep -q "alias isufe=" "$shell_rc"; then
+        echo -e "${yellow}别名已存在，将更新...${plain}"
+        sed -i.bak "/alias isufe=/d" "$shell_rc"
+    fi
+    
+    # 添加别名
+    echo "alias isufe='bash $script_path'" >> "$shell_rc"
+    echo -e "${green}✓ 别名已添加到 $shell_rc${plain}"
+    echo -e "${cyan}请运行以下命令使别名生效:${plain}"
+    echo -e "${cyan}source $shell_rc${plain}"
+    echo -e "${yellow}或者重新登录系统${plain}"
+}
+
+# 显示手动设置方法
+show_manual_setup() {
+    local script_path="$1"
+    local target_path="$2"
+    
+    echo -e "\n${yellow}手动设置方法：${plain}"
+    echo -e "${cyan}方法1 - 创建符号链接:${plain}"
+    echo -e "  sudo ln -sf $script_path $target_path"
+    echo -e "  sudo chmod +x $target_path"
+    echo -e "\n${cyan}方法2 - 添加别名:${plain}"
+    echo -e "  echo \"alias isufe='bash $script_path'\" >> ~/.bashrc"
+    echo -e "  source ~/.bashrc"
+    echo -e "\n${cyan}方法3 - 复制文件:${plain}"
+    echo -e "  sudo cp $script_path $target_path"
+    echo -e "  sudo chmod +x $target_path"
 }
 
 # 脚本主入口
@@ -2209,9 +2347,13 @@ main() {
     pre_check
     
     # 检查是否首次运行，如果是则询问是否设置快捷命令
-    if [[ ! -L "/usr/local/bin/isufe" ]] && [[ ! -f "/usr/local/bin/isufe" ]]; then
-        setup_isufe_command
-        echo ""
+    if ! command -v isufe >/dev/null 2>&1; then
+        echo -e "${yellow}检测到这是首次运行，推荐设置快捷命令${plain}"
+        read -rp "是否现在设置 'isufe' 快捷命令？(y/n): " first_setup
+        if [[ "$first_setup" == [Yy] ]]; then
+            setup_isufe_command
+            echo ""
+        fi
     fi
     
     show_menu
