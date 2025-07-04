@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 2.8
+#   版本: 2.9
 #====================================================
 
 # 颜色定义
@@ -1482,6 +1482,32 @@ setup_openvpn_routing() {
     echo -e "  - 修改OpenVPN配置启用策略路由"
     echo -e "  - 所有出站流量通过VPN，SSH连接保持直连"
     
+    echo -e "\n${yellow}请选择操作模式：${plain}"
+    echo -e "  ${cyan}1.${plain} 新建OpenVPN配置 (默认)"
+    echo -e "  ${cyan}2.${plain} 修改现有OpenVPN配置"
+    
+    local operation_mode
+    read -rp "请选择操作模式 [1-2] (默认1): " operation_mode
+    
+    # 如果用户直接按回车，使用默认值1
+    if [[ -z "$operation_mode" ]]; then
+        operation_mode="1"
+        echo -e "${green}使用默认模式: 新建OpenVPN配置${plain}"
+    fi
+    
+    case $operation_mode in
+        1)
+            echo -e "\n${green}选择模式: 新建OpenVPN配置${plain}"
+            ;;
+        2)
+            echo -e "\n${green}选择模式: 修改现有OpenVPN配置${plain}"
+            ;;
+        *)
+            echo -e "${red}无效选择，使用默认模式: 新建OpenVPN配置${plain}"
+            operation_mode="1"
+            ;;
+    esac
+    
     read -rp "确认执行OpenVPN策略路由设置？(y/n): " confirm
     if [[ "$confirm" != [Yy] ]]; then
         echo -e "${yellow}设置已取消${plain}"
@@ -1493,7 +1519,7 @@ setup_openvpn_routing() {
     # 创建临时脚本文件
     local temp_script="/tmp/openvpn_routing_setup.sh"
     
-    cat << 'EOF' > "$temp_script"
+    cat << EOF > "$temp_script"
 #!/bin/bash
 
 # ==============================================================================
@@ -1844,31 +1870,87 @@ restart_and_verify_openvpn() {
     echo -e "• 查看日志: ${CYAN}sudo journalctl -u openvpn-client@${OVPN_SERVICE_NAME}.service -f${NC}"
 }
 
+# 选择现有配置文件
+select_existing_config() {
+    OVPN_CLIENT_DIR="/etc/openvpn/client"
+    
+    if [[ ! -d "\$OVPN_CLIENT_DIR" ]]; then
+        echo -e "\${RED}错误：OpenVPN客户端目录不存在: \$OVPN_CLIENT_DIR\${NC}"
+        exit 1
+    fi
+    
+    # 查找现有的配置文件
+    local config_files=()
+    while IFS= read -r -d '' file; do
+        config_files+=("\$(basename "\$file")")
+    done < <(find "\$OVPN_CLIENT_DIR" -name "*.conf" -o -name "*.ovpn" -print0 2>/dev/null)
+    
+    if [[ \${#config_files[@]} -eq 0 ]]; then
+        echo -e "\${RED}错误：在 \$OVPN_CLIENT_DIR 中未找到任何 .conf 或 .ovpn 配置文件\${NC}"
+        echo -e "\${YELLOW}请先使用模式1创建配置文件，或手动放置配置文件到该目录\${NC}"
+        exit 1
+    fi
+    
+    echo -e "\${YELLOW}找到以下配置文件：\${NC}"
+    for i in "\${!config_files[@]}"; do
+        echo -e "  \${CYAN}\$((i+1)).  \${config_files[i]}\${NC}"
+    done
+    
+    local choice
+    while true; do
+        read -p "\$(echo -e \${YELLOW}"请选择要修改的配置文件 [1-\${#config_files[@]}]: "\${NC})" choice
+        if [[ "\$choice" =~ ^[0-9]+\$ ]] && [[ "\$choice" -ge 1 ]] && [[ "\$choice" -le "\${#config_files[@]}" ]]; then
+            break
+        else
+            echo -e "\${RED}无效选择，请输入 1-\${#config_files[@]} 之间的数字\${NC}"
+        fi
+    done
+    
+    local selected_file="\${config_files[\$((choice-1))]}"
+    OVPN_CONFIG_FILE="\$OVPN_CLIENT_DIR/\$selected_file"
+    OVPN_SERVICE_NAME=\$(basename "\$selected_file" | sed 's/\.conf\$//' | sed 's/\.ovpn\$//')
+    
+    echo -e "\${GREEN}  -> 选择的配置文件: \$OVPN_CONFIG_FILE\${NC}"
+    echo -e "\${GREEN}  -> 对应的服务名: \$OVPN_SERVICE_NAME\${NC}"
+}
+
 # --- 主逻辑 ---
 main() {
-    echo -e "${GREEN}=====================================================${NC}"
-    echo -e "${GREEN}  OpenVPN 保留 SSH 策略路由一键配置脚本 (v2)  ${NC}"
-    echo -e "${GREEN}=====================================================${NC}"
+    local operation_mode="\$1"
+    
+    echo -e "\${GREEN}====================================================\${NC}"
+    echo -e "\${GREEN}  OpenVPN 保留 SSH 策略路由一键配置脚本 (v2)  \${NC}"
+    echo -e "\${GREEN}====================================================\${NC}"
     
     check_root
     check_dependencies
     get_network_info
-    get_ovpn_config
+    
+    if [[ "\$operation_mode" == "2" ]]; then
+        # 模式2: 修改现有配置
+        echo -e "\${YELLOW}模式2: 修改现有配置文件\${NC}"
+        select_existing_config
+    else
+        # 模式1: 新建配置 (默认)
+        echo -e "\${YELLOW}模式1: 新建配置文件\${NC}"
+        get_ovpn_config
+    fi
+    
     setup_routing_table
     create_route_scripts
     modify_ovpn_config
     restart_and_verify_openvpn
 }
 
-# 执行主函数
-main
+# 执行主函数，传入操作模式参数
+main "$operation_mode"
 EOF
     
     # 设置脚本执行权限
     chmod +x "$temp_script"
     
-    # 执行脚本
-    bash "$temp_script"
+    # 执行脚本，传入操作模式参数
+    bash "$temp_script" "$operation_mode"
     
     # 清理临时文件
     rm -f "$temp_script"
@@ -2014,7 +2096,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v2.8)${plain}
+  ${green}多功能服务器工具脚本 (v2.9)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
