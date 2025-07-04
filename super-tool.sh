@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.0
+#   版本: 3.1
 #====================================================
 
 # 颜色定义
@@ -2096,7 +2096,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.0)${plain}
+  ${green}多功能服务器工具脚本 (v3.1)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
@@ -2180,9 +2180,25 @@ show_menu() {
 setup_isufe_command() {
     echo -e "${green}=== 设置isufe快捷命令 ===${plain}"
     
+    local raw_url="https://raw.githubusercontent.com/Shannon-x/super-tool/master/super-tool.sh"
+    local install_dir="/usr/local/bin"
+    local persistent_script="$install_dir/super-tool.sh"
     local script_path=$(realpath "$0")
-    local target_path="/usr/local/bin/isufe"
+    local target_path="$install_dir/isufe"
     local current_user=$(whoami)
+
+    # 如果当前脚本来自进程替换（/proc），则下载到持久位置
+    if [[ "$script_path" == /proc/* ]]; then
+        echo -e "${yellow}检测到脚本运行自进程替换，正在下载脚本到持久位置${plain}"
+        if curl -fsSL "$raw_url" -o "$persistent_script"; then
+            chmod +x "$persistent_script"
+            script_path="$persistent_script"
+            echo -e "${green}脚本已下载到: $persistent_script${plain}"
+        else
+            echo -e "${red}下载脚本失败，请检查网络${plain}"
+            return 1
+        fi
+    fi
     
     echo -e "${yellow}当前脚本路径: $script_path${plain}"
     echo -e "${yellow}目标安装路径: $target_path${plain}"
