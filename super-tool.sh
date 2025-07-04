@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.2
+#   版本: 3.3
 #====================================================
 
 # 颜色定义
@@ -1519,7 +1519,7 @@ setup_openvpn_routing() {
     # 创建临时脚本文件
     local temp_script="/tmp/openvpn_routing_setup.sh"
     
-    cat << EOF > "$temp_script"
+    cat << 'EOF' > "$temp_script"
 #!/bin/bash
 
 # ==============================================================================
@@ -2113,7 +2113,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.2)${plain}
+  ${green}多功能服务器工具脚本 (v3.3)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
