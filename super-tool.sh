@@ -13,10 +13,11 @@
 #   功能 8: 执行网络测速
 #   功能 9: 设置isufe快捷命令
 #   功能 10: 一键式OpenVPN策略路由设置
-#   功能 11: 更新脚本到最新版本
+#   功能 11: 安装3x-ui面板
+#   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 2.6
+#   版本: 2.7
 #====================================================
 
 # 颜色定义
@@ -1649,8 +1650,18 @@ get_ovpn_config() {
         exit 1
     fi
 
-    echo "$OVPN_CONTENT" > "$OVPN_CONFIG_FILE"
+    # 创建配置文件，在顶部添加加密算法配置
+    cat << CIPHER_EOF > "$OVPN_CONFIG_FILE"
+# 允许旧版 CBC 算法作备用，保持现代算法优先
+data-ciphers          AES-256-GCM:AES-128-GCM:CHACHA20-POLY1305:AES-256-CBC
+data-ciphers-fallback AES-256-CBC
+
+CIPHER_EOF
+    
+    # 添加用户提供的配置内容
+    echo "$OVPN_CONTENT" >> "$OVPN_CONFIG_FILE"
     echo -e "${GREEN}  -> 配置已成功保存到: $OVPN_CONFIG_FILE${NC}"
+    echo -e "${GREEN}  -> 已自动添加优化的加密算法配置${NC}"
 }
 
 
@@ -1805,7 +1816,43 @@ EOF
 }
 
 ############################################################
-# 选项 11: 更新脚本到最新版本
+# 选项 11: 安装3x-ui面板
+############################################################
+
+install_3xui() {
+    echo -e "${green}=== 安装3x-ui面板 ===${plain}"
+    
+    echo -e "${yellow}3x-ui 是一个功能强大的多协议代理面板${plain}"
+    echo -e "${cyan}功能特性：${plain}"
+    echo -e "  - 支持多种协议 (VMess, VLESS, Trojan, Shadowsocks等)"
+    echo -e "  - Web界面管理"
+    echo -e "  - 流量统计和用户管理"
+    echo -e "  - 自动续签SSL证书"
+    echo -e "  - 订阅功能"
+    echo -e "  - 系统状态监控"
+    
+    read -rp "确认安装3x-ui面板？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}安装已取消${plain}"
+        return 0
+    fi
+    
+    echo -e "\n${green}开始安装3x-ui面板...${plain}"
+    echo -e "${yellow}注意：安装过程中请按照提示设置管理员账户和端口${plain}"
+    
+    # 执行3x-ui安装脚本
+    bash <(curl -Ls https://raw.githubusercontent.com/mhsanaei/3x-ui/master/install.sh)
+    
+    echo -e "\n${green}3x-ui面板安装完成！${plain}"
+    echo -e "${yellow}提示：${plain}"
+    echo -e "  - 请记住安装过程中设置的管理员账户、密码和端口"
+    echo -e "  - 默认访问地址: ${cyan}https://你的服务器IP:设置的端口${plain}"
+    echo -e "  - 建议立即登录面板并配置SSL证书"
+    echo -e "  - 可使用命令 ${cyan}x-ui${plain} 来管理面板"
+}
+
+############################################################
+# 选项 12: 更新脚本到最新版本
 ############################################################
 
 update_script() {
@@ -1906,7 +1953,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v2.6)${plain}
+  ${green}多功能服务器工具脚本 (v2.7)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
@@ -1919,9 +1966,10 @@ show_menu() {
   ${yellow}8.${plain} 执行网络测速
   ${yellow}9.${plain} 设置isufe快捷命令
   ${yellow}10.${plain} 一键式OpenVPN策略路由设置
-  ${yellow}11.${plain} 更新脚本到最新版本
+  ${yellow}11.${plain} 安装3x-ui面板
+  ${yellow}12.${plain} 更新脚本到最新版本
   ---"
-    read -rp "请输入选项 [0-11]: " choice
+    read -rp "请输入选项 [0-12]: " choice
     
     case $choice in
         0)
@@ -1974,10 +2022,13 @@ show_menu() {
             setup_openvpn_routing
             ;;
         11)
+            install_3xui
+            ;;
+        12)
             update_script
             ;;
         *)
-            echo -e "${red}无效的选项，请输入 0-11${plain}"
+            echo -e "${red}无效的选项，请输入 0-12${plain}"
             ;;
     esac
 }
