@@ -1,0 +1,1583 @@
+#!/bin/bash
+
+#====================================================
+# 多功能服务器工具脚本
+#
+#   功能 1: 设置 IPTables 端口转发并持久化
+#   功能 2: 安装/更新 V2bX
+#   功能 3: 为 Hysteria2 节点设置出站规则
+#   功能 4: 为 vless/shadowsocks 节点配置出站规则
+#   功能 5: 移除银行和支付站点拦截规则
+#   功能 6: 安装哪吒探针
+#   功能 7: 安装1Panel管理面板
+#   功能 8: 执行网络测速
+#   功能 9: 设置isufe快捷命令
+#
+#   作者: Gemini (基于用户需求优化)
+#   版本: 2.4
+#====================================================
+
+# 颜色定义
+red='\033[0;31m'
+green='\033[0;32m'
+yellow='\033[0;33m'
+blue='\033[0;34m'
+purple='\033[0;35m'
+cyan='\033[0;36m'
+plain='\033[0m'
+
+# 全局变量
+cur_dir=$(pwd)
+release=""
+arch=""
+os_version=""
+
+# 预检查和环境探测
+pre_check() {
+    # check root
+    [[ $EUID -ne 0 ]] && echo -e "${red}错误：${plain} 必须使用root用户运行此脚本！\n" && exit 1
+
+    # check os
+    if [[ -f /etc/redhat-release ]]; then
+        release="centos"
+    elif cat /etc/issue | grep -Eqi "alpine"; then
+        release="alpine"
+    elif cat /etc/issue | grep -Eqi "debian"; then
+        release="debian"
+    elif cat /etc/issue | grep -Eqi "ubuntu"; then
+        release="ubuntu"
+    elif cat /etc/issue | grep -Eqi "centos|red hat|redhat|rocky|alma|oracle linux"; then
+        release="centos"
+    elif cat /proc/version | grep -Eqi "debian"; then
+        release="debian"
+    elif cat /proc/version | grep -Eqi "ubuntu"; then
+        release="ubuntu"
+    elif cat /proc/version | grep -Eqi "centos|red hat|redhat|rocky|alma|oracle linux"; then
+        release="centos"
+    elif cat /proc/version | grep -Eqi "arch"; then
+        release="arch"
+    else
+        echo -e "${red}未检测到系统版本，请联系脚本作者！${plain}\n" && exit 1
+    fi
+
+    arch=$(uname -m)
+    if [[ $arch == "x86_64" || $arch == "x64" || $arch == "amd64" ]]; then
+        arch="64"
+    elif [[ $arch == "aarch64" || $arch == "arm64" ]]; then
+        arch="arm64-v8a"
+    elif [[ $arch == "s390x" ]]; then
+        arch="s390x"
+    else
+        arch="64"
+        echo -e "${yellow}警告：检测架构失败，使用默认架构: ${arch}${plain}"
+    fi
+
+    # os version
+    if [[ -f /etc/os-release ]]; then
+        os_version=$(awk -F'[= ."]' '/VERSION_ID/{print $3}' /etc/os-release)
+    fi
+    if [[ -z "$os_version" && -f /etc/lsb-release ]]; then
+        os_version=$(awk -F'[= ."]+' '/DISTRIB_RELEASE/{print $2}' /etc/lsb-release)
+    fi
+}
+
+
+############################################################
+# 选项 1: 端口转发功能
+############################################################
+
+# 安装 iptables 持久化工具
+install_iptables_persistence() {
+    echo -e "${green}正在检查并安装 iptables 持久化工具...${plain}"
+    if [[ "${release}" == "debian" || "${release}" == "ubuntu" ]]; then
+        if ! dpkg -s iptables-persistent >/dev/null 2>&1; then
+            apt-get update -y
+            apt-get install -y iptables-persistent
+        else
+            echo -e "${green}iptables-persistent 已安装。${plain}"
+        fi
+    elif [[ "${release}" == "centos" ]]; then
+        if ! yum list installed | grep -q iptables-services; then
+            yum install -y iptables-services
+        else
+            echo -e "${green}iptables-services 已安装。${plain}"
+        fi
+        systemctl enable iptables
+        systemctl start iptables
+    else
+        echo -e "${yellow}您的操作系统 (${release}) 可能需要手动配置 iptables 规则的持久化。${plain}"
+        echo -e "${yellow}脚本将尝试使用 'iptables-save'，但您需要自行确保开机加载。${plain}"
+        echo -e "${yellow}常见方法: sudo iptables-save > /etc/iptables/rules.v4 (路径可能不同)${plain}"
+    fi
+}
+
+# 持久化规则
+persist_rules() {
+    echo -e "${green}正在持久化新的 iptables 规则...${plain}"
+    if [[ "${release}" == "debian" || "${release}" == "ubuntu" ]]; then
+        netfilter-persistent save
+    elif [[ "${release}" == "centos" ]]; then
+        service iptables save
+    else
+        # 通用回退方案
+        mkdir -p /etc/iptables
+        iptables-save > /etc/iptables/rules.v4
+    fi
+    echo -e "${green}规则已成功保存！${plain}"
+}
+
+# 设置端口转发主函数
+setup_port_forwarding() {
+    echo -e "${green}开始设置端口转发...${plain}"
+    
+    install_iptables_persistence
+
+    # 获取用户输入
+    read -rp "请选择协议 (1 for TCP, 2 for UDP, 3 for Both): " proto_choice
+    read -rp "请输入要转发的源端口或端口范围 (例如 8000 或 10000:20000): " source_ports
+    read -rp "请输入目标端口 (流量将被重定向到此端口): " dest_port
+
+    # 输入验证
+    if [[ -z "$source_ports" || -z "$dest_port" ]]; then
+        echo -e "${red}错误：源端口和目标端口不能为空！${plain}"
+        return 1
+    fi
+    # 简单验证端口格式
+    if ! [[ "$source_ports" =~ ^[0-9]+(:[0-9]+)?$ && "$dest_port" =~ ^[0-9]+$ ]]; then
+        echo -e "${red}错误：端口格式不正确！${plain}"
+        return 1
+    fi
+
+    # 定义要执行的操作
+    apply_rule() {
+        local proto=$1
+        echo -e "\n${yellow}准备应用以下规则:${plain}"
+        local cmd="iptables -t nat -A PREROUTING -p ${proto} --dport ${source_ports} -j REDIRECT --to-ports ${dest_port}"
+        echo -e "${green}${cmd}${plain}"
+        
+        read -rp "确认应用此规则吗? (y/n): " confirm
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            eval ${cmd}
+            echo -e "${green}规则已应用！${plain}"
+        else
+            echo -e "${red}操作已取消。${plain}"
+            return 1
+        fi
+    }
+
+    local success=0
+    case $proto_choice in
+        1)
+            apply_rule "tcp" || success=1
+            ;;
+        2)
+            apply_rule "udp" || success=1
+            ;;
+        3)
+            apply_rule "tcp" || success=1
+            if [[ $success -eq 0 ]]; then
+                apply_rule "udp" || success=1
+            fi
+            ;;
+        *)
+            echo -e "${red}无效的协议选择。${plain}"
+            return 1
+            ;;
+    esac
+    
+    # 如果规则应用成功，则持久化
+    if [[ $success -eq 0 ]]; then
+        persist_rules
+        echo -e "\n${green}端口转发设置完成！${plain}"
+        echo -e "${yellow}当前PREROUTING规则列表:${plain}"
+        iptables -t nat -L PREROUTING -n --line-numbers
+    fi
+}
+
+
+############################################################
+# 选项 2: V2bX 安装/更新功能
+############################################################
+
+install_base() {
+    if [[ x"${release}" == x"centos" ]]; then
+        yum install epel-release wget curl unzip tar crontabs socat ca-certificates -y
+        update-ca-trust force-enable
+    elif [[ x"${release}" == x"alpine" ]]; then
+        apk add wget curl unzip tar socat ca-certificates
+        update-ca-certificates
+    elif [[ x"${release}" == x"debian" ]]; then
+        apt-get update -y
+        apt install wget curl unzip tar cron socat ca-certificates -y
+        update-ca-certificates
+    elif [[ x"${release}" == x"ubuntu" ]]; then
+        apt-get update -y
+        apt install wget curl unzip tar cron socat -y
+        apt-get install ca-certificates wget -y
+        update-ca-certificates
+    elif [[ x"${release}" == x"arch" ]]; then
+        pacman -Sy
+        pacman -S --noconfirm --needed wget curl unzip tar cron socat
+        pacman -S --noconfirm --needed ca-certificates wget
+    fi
+}
+
+# 0: running, 1: not running, 2: not installed
+check_status() {
+    if [[ ! -f /usr/local/V2bX/V2bX ]]; then
+        return 2
+    fi
+    if [[ x"${release}" == x"alpine" ]]; then
+        temp=$(service V2bX status | awk '{print $3}')
+        if [[ x"${temp}" == x"started" ]]; then
+            return 0
+        else
+            return 1
+        fi
+    else
+        if ! systemctl status V2bX >/dev/null 2>&1; then
+            return 1 # 服务不存在或有错误
+        fi
+        temp=$(systemctl status V2bX | grep Active | awk '{print $3}' | cut -d "(" -f2 | cut -d ")" -f1)
+        if [[ x"${temp}" == x"running" ]]; then
+            return 0
+        else
+            return 1
+        fi
+    fi
+}
+
+install_V2bX() {
+    if [[ -e /usr/local/V2bX/ ]]; then
+        rm -rf /usr/local/V2bX/
+    fi
+
+    mkdir /usr/local/V2bX/ -p
+    cd /usr/local/V2bX/
+
+    local version_arg=$1
+    if [ -z "$version_arg" ] ;then
+        last_version=$(curl -Ls "https://api.github.com/repos/wyx2685/V2bX/releases/latest" | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+        if [[ ! -n "$last_version" ]]; then
+            echo -e "${red}检测 V2bX 版本失败，可能是超出 Github API 限制，请稍后再试，或手动指定 V2bX 版本安装${plain}"
+            exit 1
+        fi
+        echo -e "检测到 V2bX 最新版本：${last_version}，开始安装"
+        wget -q -N --no-check-certificate -O /usr/local/V2bX/V2bX-linux.zip https://github.com/wyx2685/V2bX/releases/download/${last_version}/V2bX-linux-${arch}.zip
+        if [[ $? -ne 0 ]]; then
+            echo -e "${red}下载 V2bX 失败，请确保你的服务器能够下载 Github 的文件${plain}"
+            exit 1
+        fi
+    else
+        last_version=$version_arg
+        url="https://github.com/wyx2685/V2bX/releases/download/${last_version}/V2bX-linux-${arch}.zip"
+        echo -e "开始安装 V2bX $1"
+        wget -q -N --no-check-certificate -O /usr/local/V2bX/V2bX-linux.zip ${url}
+        if [[ $? -ne 0 ]]; then
+            echo -e "${red}下载 V2bX $1 失败，请确保此版本存在${plain}"
+            exit 1
+        fi
+    fi
+
+    unzip V2bX-linux.zip
+    rm V2bX-linux.zip -f
+    chmod +x V2bX
+    mkdir /etc/V2bX/ -p
+    cp geoip.dat /etc/V2bX/
+    cp geosite.dat /etc/V2bX/
+    if [[ x"${release}" == x"alpine" ]]; then
+        rm /etc/init.d/V2bX -f
+        cat <<EOF > /etc/init.d/V2bX
+#!/sbin/openrc-run
+
+name="V2bX"
+description="V2bX"
+
+command="/usr/local/V2bX/V2bX"
+command_args="server"
+command_user="root"
+
+pidfile="/run/V2bX.pid"
+command_background="yes"
+
+depend() {
+        need net
+}
+EOF
+        chmod +x /etc/init.d/V2bX
+        rc-update add V2bX default
+        echo -e "${green}V2bX ${last_version}${plain} 安装完成，已设置开机自启"
+    else
+        rm /etc/systemd/system/V2bX.service -f
+        file="https://github.com/wyx2685/V2bX-script/raw/master/V2bX.service"
+        wget -q -N --no-check-certificate -O /etc/systemd/system/V2bX.service ${file}
+        systemctl daemon-reload
+        systemctl stop V2bX
+        systemctl enable V2bX
+        echo -e "${green}V2bX ${last_version}${plain} 安装完成，已设置开机自启"
+    fi
+
+    local first_install=false
+    if [[ ! -f /etc/V2bX/config.json ]]; then
+        cp config.json /etc/V2bX/
+        echo -e ""
+        echo -e "全新安装，请先参看教程：https://v2bx.v-50.me/，配置必要的内容"
+        first_install=true
+    else
+        if [[ x"${release}" == x"alpine" ]]; then
+            service V2bX start
+        else
+            systemctl start V2bX
+        fi
+        sleep 2
+        check_status
+        echo -e ""
+        if [[ $? == 0 ]]; then
+            echo -e "${green}V2bX 重启成功${plain}"
+        else
+            echo -e "${red}V2bX 可能启动失败，请稍后使用 V2bX log 查看日志信息。${plain}"
+        fi
+    fi
+
+    # 复制其他配置文件
+    cp_if_not_exist() {
+        if [[ ! -f "/etc/V2bX/$1" ]]; then
+            cp "$1" "/etc/V2bX/"
+        fi
+    }
+    cp_if_not_exist dns.json
+    cp_if_not_exist route.json
+    cp_if_not_exist custom_outbound.json
+    cp_if_not_exist custom_inbound.json
+    
+    curl -o /usr/bin/V2bX -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/V2bX.sh
+    chmod +x /usr/bin/V2bX
+    if [ ! -L /usr/bin/v2bx ]; then
+        ln -s /usr/bin/V2bX /usr/bin/v2bx
+        chmod +x /usr/bin/v2bx
+    fi
+    cd $cur_dir
+    rm -f install.sh
+    echo -e ""
+    echo "V2bX 管理脚本使用方法 (兼容使用v2bx执行): "
+    echo "------------------------------------------"
+    echo "V2bX              - 显示管理菜单 (功能更多)"
+    echo "V2bX start        - 启动 V2bX"
+    echo "V2bX stop         - 停止 V2bX"
+    echo "V2bX restart      - 重启 V2bX"
+    echo "V2bX log          - 查看 V2bX 日志"
+    echo "V2bX update       - 更新 V2bX"
+    echo "V2bX install      - 安装 V2bX"
+    echo "V2bX uninstall    - 卸载 V2bX"
+    echo "------------------------------------------"
+    
+    if [[ "$first_install" == true ]]; then
+        read -rp "检测到你为第一次安装V2bX,是否自动直接生成配置文件？(y/n): " if_generate
+        if [[ "$if_generate" == [Yy] ]]; then
+            curl -o ./initconfig.sh -Ls https://raw.githubusercontent.com/wyx2685/V2bX-script/master/initconfig.sh
+            source initconfig.sh
+            rm initconfig.sh -f
+            generate_config_file
+        fi
+    fi
+}
+
+# V2bX 安装流程的包装函数
+run_v2bx_installer() {
+    # 版本兼容性检查
+    if [[ x"${release}" == x"centos" ]]; then
+        if [[ ${os_version} -le 6 ]]; then
+            echo -e "${red}请使用 CentOS 7 或更高版本的系统！${plain}\n" && exit 1
+        fi
+        if [[ ${os_version} -eq 7 ]]; then
+            echo -e "${red}注意： CentOS 7 无法使用hysteria1/2协议！${plain}\n"
+        fi
+    elif [[ x"${release}" == x"ubuntu" ]]; then
+        if [[ ${os_version} -lt 16 ]]; then
+            echo -e "${red}请使用 Ubuntu 16 或更高版本的系统！${plain}\n" && exit 1
+        fi
+    elif [[ x"${release}" == x"debian" ]]; then
+        if [[ ${os_version} -lt 8 ]]; then
+            echo -e "${red}请使用 Debian 8 或更高版本的系统！${plain}\n" && exit 1
+        fi
+    fi
+
+    echo -e "${green}开始安装 V2bX...${plain}"
+    install_base
+    install_V2bX
+}
+
+############################################################
+# 选项 3: Hysteria2 节点出站规则设置
+############################################################
+
+# 解析socks5 URL
+parse_socks5_url() {
+    local url=$1
+    if [[ ! "$url" =~ ^socks5://([^:]+):([^@]+)@([^:]+):([0-9]+)$ ]]; then
+        echo -e "${red}错误：socks5 URL格式不正确！${plain}"
+        echo -e "${yellow}正确格式：socks5://username:password@host:port${plain}"
+        return 1
+    fi
+    
+    username="${BASH_REMATCH[1]}"
+    password="${BASH_REMATCH[2]}"
+    host="${BASH_REMATCH[3]}"
+    port="${BASH_REMATCH[4]}"
+    
+    echo -e "${green}解析成功：${plain}"
+    echo -e "  用户名: ${cyan}$username${plain}"
+    echo -e "  密码: ${cyan}$password${plain}"
+    echo -e "  主机: ${cyan}$host${plain}"
+    echo -e "  端口: ${cyan}$port${plain}"
+    return 0
+}
+
+# 生成 hysteria2 配置文件
+generate_hy2_config() {
+    local config_path=$1
+    local host=$2
+    local port=$3
+    local username=$4
+    local password=$5
+    
+    cat > "$config_path" << EOF
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: false
+
+ignoreClientBandwidth: false
+disableUDP: false
+udpIdleTimeout: 60s
+
+resolver:
+  type: system
+
+# —— 出站，action 名称不能有中划线 ——  
+outbounds:
+  - name: socks5_out     # 改为 下划线
+    type: socks5
+    socks5:
+      addr: ${host}:${port}
+      username: ${username}
+      password: ${password}
+
+# —— ACL：所有流量都走 socks5_out ——  
+acl:
+  inline:
+    - "socks5_out(all)"   # 引号+下划线
+
+# —— 伪装配置保持不变 ——  
+masquerade:
+  type: 404
+EOF
+    
+    echo -e "${green}已生成配置文件：${plain}${config_path}"
+}
+
+# 检查并备份现有配置
+backup_config() {
+    local config_file="/etc/V2bX/config.json"
+    if [[ -f "$config_file" ]]; then
+        local backup_file="/etc/V2bX/config.json.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$config_file" "$backup_file"
+        echo -e "${green}已备份原配置文件到：${plain}${backup_file}"
+        return 0
+    else
+        echo -e "${red}错误：找不到 V2bX 配置文件 ${config_file}${plain}"
+        return 1
+    fi
+}
+
+# 获取 hysteria2 节点列表
+get_hy2_nodes() {
+    local config_file="/etc/V2bX/config.json"
+    if [[ ! -f "$config_file" ]]; then
+        echo -e "${red}错误：找不到配置文件 ${config_file}${plain}"
+        return 1
+    fi
+    
+    # 使用 Python 解析 JSON（大多数系统都有 Python）
+    python3 -c "
+import json
+import sys
+
+try:
+    with open('$config_file', 'r') as f:
+        config = json.load(f)
+    
+    hy2_nodes = []
+    if 'Nodes' in config:
+        for node in config['Nodes']:
+            if node.get('Core') == 'hysteria2' or node.get('NodeType') == 'hysteria2':
+                hy2_nodes.append({
+                    'NodeID': node.get('NodeID'),
+                    'Hysteria2ConfigPath': node.get('Hysteria2ConfigPath', '/etc/V2bX/hy2config.yaml')
+                })
+    
+    if hy2_nodes:
+        print('找到以下 Hysteria2 节点：')
+        for i, node in enumerate(hy2_nodes, 1):
+            print(f'{i}. NodeID: {node[\"NodeID\"]}, 配置文件: {node[\"Hysteria2ConfigPath\"]}')
+        
+        # 输出节点信息供 shell 使用
+        for node in hy2_nodes:
+            print(f'HY2_NODE:{node[\"NodeID\"]}:{node[\"Hysteria2ConfigPath\"]}')
+    else:
+        print('未找到 Hysteria2 节点')
+        sys.exit(1)
+        
+except Exception as e:
+    print(f'解析配置文件失败: {e}')
+    sys.exit(1)
+" 2>/dev/null
+}
+
+# 配置 hysteria2 出站规则
+setup_hy2_outbound() {
+    echo -e "${green}=== Hysteria2 节点出站规则配置 ===${plain}"
+    
+    # 检查配置文件
+    if ! backup_config; then
+        return 1
+    fi
+    
+    # 获取 hysteria2 节点
+    echo -e "${yellow}正在扫描 Hysteria2 节点...${plain}"
+    local hy2_info
+    hy2_info=$(get_hy2_nodes)
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}未找到 Hysteria2 节点或解析失败${plain}"
+        return 1
+    fi
+    
+    # 显示节点信息
+    echo -e "${cyan}$hy2_info${plain}" | head -n -$(echo "$hy2_info" | grep "HY2_NODE:" | wc -l)
+    
+    # 提取节点信息
+    local nodes=()
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^HY2_NODE:(.+):(.+)$ ]]; then
+            nodes+=("${BASH_REMATCH[1]}:${BASH_REMATCH[2]}")
+        fi
+    done <<< "$hy2_info"
+    
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        echo -e "${red}未找到有效的 Hysteria2 节点${plain}"
+        return 1
+    fi
+    
+    echo -e "\n${yellow}开始配置各个节点的出站规则...${plain}"
+    
+    # 为每个节点配置出站规则
+    for node_info in "${nodes[@]}"; do
+        IFS=':' read -r node_id config_path <<< "$node_info"
+        
+        echo -e "\n${purple}=== 配置节点 ${node_id} ===${plain}"
+        echo -e "${cyan}配置文件路径：${config_path}${plain}"
+        
+        # 询问用户是否要为此节点配置出站规则
+        read -rp "是否要为节点 ${node_id} 配置出站规则？(y/n): " configure_node
+        if [[ "$configure_node" != [Yy] ]]; then
+            echo -e "${yellow}跳过节点 ${node_id}${plain}"
+            continue
+        fi
+        
+        # 获取 socks5 配置
+        while true; do
+            echo -e "${yellow}请输入节点 ${node_id} 的 socks5 代理配置：${plain}"
+            echo -e "${cyan}格式：socks5://username:password@host:port${plain}"
+            echo -e "${cyan}示例：socks5://vxj7qzplne:mu4rtok938@23.142.16.246:12732${plain}"
+            read -rp "socks5 URL: " socks5_url
+            
+            if [[ -z "$socks5_url" ]]; then
+                echo -e "${yellow}跳过节点 ${node_id}${plain}"
+                break
+            fi
+            
+            # 解析 socks5 URL
+            if parse_socks5_url "$socks5_url"; then
+                # 确认配置
+                echo -e "\n${yellow}请确认节点 ${node_id} 的出站配置：${plain}"
+                echo -e "  节点ID: ${cyan}${node_id}${plain}"
+                echo -e "  配置文件: ${cyan}${config_path}${plain}"
+                echo -e "  SOCKS5服务器: ${cyan}${host}:${port}${plain}"
+                echo -e "  用户名: ${cyan}${username}${plain}"
+                echo -e "  密码: ${cyan}${password}${plain}"
+                
+                read -rp "确认创建此配置？(y/n): " confirm
+                if [[ "$confirm" == [Yy] ]]; then
+                    # 创建配置目录
+                    mkdir -p "$(dirname "$config_path")"
+                    
+                    # 生成配置文件
+                    generate_hy2_config "$config_path" "$host" "$port" "$username" "$password"
+                    
+                    echo -e "${green}节点 ${node_id} 配置完成！${plain}"
+                    break
+                else
+                    echo -e "${yellow}已取消，请重新输入...${plain}"
+                fi
+            else
+                echo -e "${red}URL格式错误，请重新输入...${plain}"
+            fi
+        done
+    done
+    
+    echo -e "\n${green}=== Hysteria2 出站规则配置完成 ===${plain}"
+    echo -e "${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
+    echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
+}
+
+############################################################
+# 选项 4: 为vless和shadowsocks节点配置出站规则
+############################################################
+
+# 初始化custom_outbound.json文件
+init_custom_outbound() {
+    local outbound_file="/etc/V2bX/custom_outbound.json"
+    
+    if [[ ! -f "$outbound_file" ]]; then
+        echo -e "${yellow}创建新的 custom_outbound.json 文件...${plain}"
+        cat > "$outbound_file" << 'EOF'
+[
+  {
+    "tag": "IPv4_out",
+    "protocol": "freedom",
+    "settings": { "domainStrategy": "UseIPv4v6" }
+  },
+  {
+    "tag": "IPv6_out",
+    "protocol": "freedom",
+    "settings": { "domainStrategy": "UseIPv6" }
+  },
+  {
+    "protocol": "blackhole",
+    "tag": "block"
+  }
+]
+EOF
+    else
+        echo -e "${green}custom_outbound.json 文件已存在${plain}"
+    fi
+}
+
+# 解析socks5 URL并提取信息
+parse_socks5_for_outbound() {
+    local url=$1
+    if [[ ! "$url" =~ ^socks5://([^:]+):([^@]+)@([^:]+):([0-9]+)$ ]]; then
+        echo -e "${red}错误：socks5 URL格式不正确！${plain}"
+        echo -e "${yellow}正确格式：socks5://username:password@host:port${plain}"
+        return 1
+    fi
+    
+    socks_username="${BASH_REMATCH[1]}"
+    socks_password="${BASH_REMATCH[2]}"
+    socks_host="${BASH_REMATCH[3]}"
+    socks_port="${BASH_REMATCH[4]}"
+    
+    echo -e "${green}解析成功：${plain}"
+    echo -e "  用户名: ${cyan}$socks_username${plain}"
+    echo -e "  密码: ${cyan}$socks_password${plain}"
+    echo -e "  主机: ${cyan}$socks_host${plain}"
+    echo -e "  端口: ${cyan}$socks_port${plain}"
+    return 0
+}
+
+# 添加socks出站到custom_outbound.json
+add_socks_outbound() {
+    local tag=$1
+    local host=$2
+    local port=$3
+    local username=$4
+    local password=$5
+    local outbound_file="/etc/V2bX/custom_outbound.json"
+    
+    # 备份原文件
+    cp "$outbound_file" "${outbound_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    
+    # 使用Python来操作JSON文件
+    python3 << EOF
+import json
+import sys
+
+outbound_file = "$outbound_file"
+new_outbound = {
+    "tag": "$tag",
+    "protocol": "socks",
+    "settings": {
+        "servers": [
+            {
+                "address": "$host",
+                "port": int("$port"),
+                "users": [
+                    { "user": "$username", "pass": "$password" }
+                ]
+            }
+        ]
+    }
+}
+
+try:
+    with open(outbound_file, 'r') as f:
+        outbounds = json.load(f)
+    
+    # 检查是否已存在相同tag
+    exists = False
+    for i, outbound in enumerate(outbounds):
+        if outbound.get('tag') == "$tag":
+            outbounds[i] = new_outbound
+            exists = True
+            break
+    
+    if not exists:
+        outbounds.append(new_outbound)
+    
+    with open(outbound_file, 'w') as f:
+        json.dump(outbounds, f, indent=2)
+    
+    print("添加成功")
+    
+except Exception as e:
+    print(f"错误: {e}")
+    sys.exit(1)
+EOF
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "${green}已添加socks出站: ${tag}${plain}"
+        return 0
+    else
+        echo -e "${red}添加socks出站失败${plain}"
+        return 1
+    fi
+}
+
+# 获取所有可用的socks出站标签
+get_socks_outbounds() {
+    local outbound_file="/etc/V2bX/custom_outbound.json"
+    
+    python3 << EOF
+import json
+
+try:
+    with open("$outbound_file", 'r') as f:
+        outbounds = json.load(f)
+    
+    socks_tags = []
+    for outbound in outbounds:
+        if outbound.get('protocol') == 'socks':
+            socks_tags.append(outbound.get('tag'))
+    
+    if socks_tags:
+        for tag in socks_tags:
+            print(f"SOCKS_TAG:{tag}")
+    else:
+        print("NO_SOCKS_TAGS")
+        
+except Exception as e:
+    print("ERROR")
+EOF
+}
+
+# 获取vless和shadowsocks节点
+get_vless_ss_nodes() {
+    local config_file="/etc/V2bX/config.json"
+    
+    python3 << EOF
+import json
+import sys
+
+try:
+    with open('$config_file', 'r') as f:
+        config = json.load(f)
+    
+    nodes = []
+    if 'Nodes' in config:
+        for node in config['Nodes']:
+            if node.get('NodeType') in ['vless', 'shadowsocks']:
+                nodes.append({
+                    'NodeID': node.get('NodeID'),
+                    'NodeType': node.get('NodeType'),
+                    'ApiHost': node.get('ApiHost', '')
+                })
+    
+    if nodes:
+        for node in nodes:
+            api_host = node['ApiHost'].replace('https://', '').replace('http://', '')
+            print(f"NODE:{node['NodeID']}:{node['NodeType']}:{api_host}")
+    else:
+        print("NO_NODES")
+        sys.exit(1)
+        
+except Exception as e:
+    print(f"ERROR: {e}")
+    sys.exit(1)
+EOF
+}
+
+# 生成路由规则
+generate_route_config() {
+    local route_file="/etc/V2bX/route.json"
+    local node_mappings="$1"  # 格式: "NodeID:NodeType:ApiHost:SocksTag,..."
+    
+    # 备份原路由文件
+    if [[ -f "$route_file" ]]; then
+        cp "$route_file" "${route_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    fi
+    
+    python3 << EOF
+import json
+
+route_file = "$route_file"
+mappings_str = "$node_mappings"
+
+# 解析节点映射
+node_mappings = {}
+if mappings_str:
+    for mapping in mappings_str.split(','):
+        if mapping.strip():
+            parts = mapping.strip().split(':')
+            if len(parts) == 4:
+                node_id, node_type, api_host, socks_tag = parts
+                node_mappings[node_id] = {
+                    'type': node_type,
+                    'host': api_host,
+                    'socks': socks_tag
+                }
+
+# 生成路由配置
+route_config = {
+    "domainStrategy": "AsIs",
+    "rules": []
+}
+
+# 为shadowsocks节点添加阻止中国大陆连接的规则
+for node_id, info in node_mappings.items():
+    if info['type'] == 'shadowsocks':
+        block_rule = {
+            "type": "field",
+            "inboundTag": [f"[{info['host']}]-shadowsocks:{node_id}"],
+            "source": ["geoip:cn"],
+            "outboundTag": "block",
+            "ruleTag": f"block-china-ss{node_id}"
+        }
+        route_config["rules"].append(block_rule)
+
+# 为所有节点添加socks出站规则
+for node_id, info in node_mappings.items():
+    if info['type'] == 'shadowsocks':
+        inbound_tag = f"[{info['host']}]-shadowsocks:{node_id}"
+    elif info['type'] == 'vless':
+        inbound_tag = f"[{info['host']}]-vless:{node_id}"
+    else:
+        continue
+    
+    route_rule = {
+        "type": "field",
+        "inboundTag": [inbound_tag],
+        "outboundTag": info['socks']
+    }
+    route_config["rules"].append(route_rule)
+
+# 添加默认规则
+default_rules = [
+    {
+        "type": "field",
+        "outboundTag": "block",
+        "ip": ["geoip:private"]
+    },
+    {
+        "type": "field",
+        "outboundTag": "block",
+        "domain": [
+            "regexp:(api|ps|sv|offnavi|newvector|ulog.imap|newloc)(.map|).(baidu|n.shifen).com",
+            "regexp:(.+.|^)(360|so).(cn|com)",
+            "regexp:(Subject|HELO|SMTP)",
+            "regexp:(torrent|.torrent|peer_id=|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=)",
+            "regexp:(^.@)(guerrillamail|guerrillamailblock|sharklasers|grr|pokemail|spam4|bccto|chacuo|027168).(info|biz|com|de|net|org|me|la)",
+            "regexp:(.?)(xunlei|sandai|Thunder|XLLiveUD)(.)",
+            "regexp:(..||)(dafahao|mingjinglive|botanwang|minghui|dongtaiwang|falunaz|epochtimes|ntdtv|falundafa|falungong|wujieliulan|zhengjian).(org|com|net)",
+            "regexp:(ed2k|.torrent|peer_id=|announce|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=|magnet:|xunlei|sandai|Thunder|XLLiveUD|bt_key)",
+            "regexp:(.+.|^)(360).(cn|com|net)",
+            "regexp:(.*.||)(guanjia.qq.com|qqpcmgr|QQPCMGR)",
+            "regexp:(.*.||)(rising|kingsoft|duba|xindubawukong|jinshanduba).(com|net|org)",
+            "regexp:(.*.||)(netvigator|torproject).(com|cn|net|org)",
+            "regexp:(..||)(visa|mycard|gash|beanfun|bank).",
+            "regexp:(.*.||)(gov|12377|12315|talk.news.pts.org|creaders|zhuichaguoji|efcc.org|cyberpolice|aboluowang|tuidang|epochtimes|zhengjian|110.qq|mingjingnews|inmediahk|xinsheng|breakgfw|chengmingmag|jinpianwang|qi-gong|mhradio|edoors|renminbao|soundofhope|xizang-zhiye|bannedbook|ntdtv|12321|secretchina|dajiyuan|boxun|chinadigitaltimes|dwnews|huaglad|oneplusnews|epochweekly|cn.rfi).(cn|com|org|net|club|fr|tw|hk|eu|info|me)",
+            "regexp:(.*.||)(miaozhen|cnzz|talkingdata|umeng).(cn|com)",
+            "regexp:(.*.||)(mycard).(com|tw)",
+            "regexp:(.*.||)(gash).(com|tw)",
+            "regexp:(.bank.)",
+            "regexp:(.*.||)(pincong).(rocks)",
+            "regexp:(.*.||)(taobao).(com)",
+            "regexp:(.*.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126).(com|cloud|fun|cn|gs|xyz|cc)",
+            "regexp:(flows|miaoko).(pages).(dev)"
+        ]
+    },
+    {
+        "type": "field",
+        "outboundTag": "block",
+        "ip": [
+            "127.0.0.1/32",
+            "10.0.0.0/8",
+            "fc00::/7",
+            "fe80::/10",
+            "172.16.0.0/12"
+        ]
+    },
+    {
+        "type": "field",
+        "outboundTag": "block",
+        "protocol": ["bittorrent"]
+    }
+]
+
+route_config["rules"].extend(default_rules)
+
+# 写入文件
+try:
+    with open(route_file, 'w') as f:
+        json.dump(route_config, f, indent=2)
+    print("路由配置生成成功")
+except Exception as e:
+    print(f"错误: {e}")
+EOF
+}
+
+# 配置vless和shadowsocks节点出站规则
+setup_vless_ss_outbound() {
+    echo -e "${green}=== vless和shadowsocks节点出站规则配置 ===${plain}"
+    
+    # 检查配置文件
+    if ! backup_config; then
+        return 1
+    fi
+    
+    # 初始化custom_outbound.json
+    init_custom_outbound
+    
+    echo -e "\n${yellow}=== 第一步：配置socks出站 ===${plain}"
+    
+    # 配置socks出站
+    while true; do
+        echo -e "\n${cyan}是否要添加新的socks出站配置？(y/n):${plain}"
+        read -rp "> " add_socks
+        
+        if [[ "$add_socks" != [Yy] ]]; then
+            break
+        fi
+        
+        # 输入socks配置
+        while true; do
+            echo -e "${yellow}请输入socks5配置：${plain}"
+            echo -e "${cyan}格式：socks5://username:password@host:port${plain}"
+            echo -e "${cyan}示例：socks5://vxj7qzplne:mu4rtok938@23.142.16.246:12732${plain}"
+            read -rp "socks5 URL: " socks5_url
+            
+            if [[ -z "$socks5_url" ]]; then
+                echo -e "${yellow}已取消添加${plain}"
+                break
+            fi
+            
+            # 解析socks5 URL
+            if parse_socks5_for_outbound "$socks5_url"; then
+                # 输入标签名
+                read -rp "请输入这个socks出站的标签名 (如: socks_di8): " socks_tag
+                if [[ -z "$socks_tag" ]]; then
+                    echo -e "${red}标签名不能为空${plain}"
+                    continue
+                fi
+                
+                # 确认配置
+                echo -e "\n${yellow}请确认socks出站配置：${plain}"
+                echo -e "  标签: ${cyan}${socks_tag}${plain}"
+                echo -e "  服务器: ${cyan}${socks_host}:${socks_port}${plain}"
+                echo -e "  用户名: ${cyan}${socks_username}${plain}"
+                echo -e "  密码: ${cyan}${socks_password}${plain}"
+                
+                read -rp "确认添加此配置？(y/n): " confirm
+                if [[ "$confirm" == [Yy] ]]; then
+                    if add_socks_outbound "$socks_tag" "$socks_host" "$socks_port" "$socks_username" "$socks_password"; then
+                        echo -e "${green}socks出站 ${socks_tag} 添加成功！${plain}"
+                        break
+                    else
+                        echo -e "${red}添加失败，请重试${plain}"
+                    fi
+                else
+                    echo -e "${yellow}已取消，请重新输入...${plain}"
+                fi
+            else
+                echo -e "${red}URL格式错误，请重新输入...${plain}"
+            fi
+        done
+    done
+    
+    echo -e "\n${yellow}=== 第二步：获取可用的socks出站 ===${plain}"
+    
+    # 获取所有socks出站
+    local socks_info
+    socks_info=$(get_socks_outbounds)
+    
+    if [[ "$socks_info" == "NO_SOCKS_TAGS" ]] || [[ "$socks_info" == "ERROR" ]]; then
+        echo -e "${red}未找到任何socks出站配置${plain}"
+        return 1
+    fi
+    
+    # 提取socks标签
+    local socks_tags=()
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^SOCKS_TAG:(.+)$ ]]; then
+            socks_tags+=("${BASH_REMATCH[1]}")
+        fi
+    done <<< "$socks_info"
+    
+    if [[ ${#socks_tags[@]} -eq 0 ]]; then
+        echo -e "${red}未找到有效的socks出站标签${plain}"
+        return 1
+    fi
+    
+    echo -e "${green}可用的socks出站：${plain}"
+    for i in "${!socks_tags[@]}"; do
+        echo -e "  ${cyan}$((i+1)). ${socks_tags[i]}${plain}"
+    done
+    
+    echo -e "\n${yellow}=== 第三步：获取vless和shadowsocks节点 ===${plain}"
+    
+    # 获取节点信息
+    local nodes_info
+    nodes_info=$(get_vless_ss_nodes)
+    
+    if [[ "$nodes_info" == "NO_NODES" ]] || [[ "$nodes_info" == "ERROR"* ]]; then
+        echo -e "${red}未找到vless或shadowsocks节点${plain}"
+        return 1
+    fi
+    
+    # 提取节点信息
+    local nodes=()
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^NODE:(.+)$ ]]; then
+            nodes+=("${BASH_REMATCH[1]}")
+        fi
+    done <<< "$nodes_info"
+    
+    if [[ ${#nodes[@]} -eq 0 ]]; then
+        echo -e "${red}未找到有效的节点${plain}"
+        return 1
+    fi
+    
+    echo -e "\n${yellow}=== 第四步：为每个节点选择socks出站 ===${plain}"
+    
+    # 节点映射
+    local node_mappings=""
+    
+    for node_info in "${nodes[@]}"; do
+        IFS=':' read -r node_id node_type api_host <<< "$node_info"
+        
+        echo -e "\n${purple}=== 配置节点 ${node_id} (${node_type}) ===${plain}"
+        
+        # 显示可用的socks出站
+        echo -e "${cyan}可用的socks出站：${plain}"
+        for i in "${!socks_tags[@]}"; do
+            echo -e "  ${cyan}$((i+1)). ${socks_tags[i]}${plain}"
+        done
+        
+        # 选择socks出站
+        while true; do
+            read -rp "请选择节点 ${node_id} 使用的socks出站 (输入序号): " choice
+            
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#socks_tags[@]} ]]; then
+                selected_socks="${socks_tags[$((choice-1))]}"
+                echo -e "${green}节点 ${node_id} 将使用socks出站: ${selected_socks}${plain}"
+                
+                # 添加到映射
+                if [[ -n "$node_mappings" ]]; then
+                    node_mappings="${node_mappings},${node_id}:${node_type}:${api_host}:${selected_socks}"
+                else
+                    node_mappings="${node_id}:${node_type}:${api_host}:${selected_socks}"
+                fi
+                break
+            else
+                echo -e "${red}无效的选择，请输入1-${#socks_tags[@]}${plain}"
+            fi
+        done
+    done
+    
+    echo -e "\n${yellow}=== 第五步：生成路由配置 ===${plain}"
+    
+    # 生成路由配置
+    generate_route_config "$node_mappings"
+    
+    echo -e "\n${green}=== vless和shadowsocks节点出站规则配置完成 ===${plain}"
+    echo -e "${yellow}配置文件已更新：${plain}"
+    echo -e "  - ${cyan}/etc/V2bX/custom_outbound.json${plain}"
+    echo -e "  - ${cyan}/etc/V2bX/route.json${plain}"
+    echo -e "${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
+    echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
+}
+
+############################################################
+# 选项 5: 移除银行和支付站点拦截规则
+############################################################
+
+# 移除银行和支付站点的拦截规则
+remove_payment_blocks() {
+    echo -e "${green}=== 移除银行和支付站点拦截规则 ===${plain}"
+    
+    local route_file="/etc/V2bX/route.json"
+    
+    # 检查配置文件是否存在
+    if [[ ! -f "$route_file" ]]; then
+        echo -e "${red}错误：找不到路由配置文件 ${route_file}${plain}"
+        return 1
+    fi
+    
+    # 备份原配置文件
+    local backup_file="${route_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$route_file" "$backup_file"
+    echo -e "${green}已备份原配置文件到：${plain}${backup_file}"
+    
+    # 显示将要移除的规则
+    echo -e "\n${yellow}将移除以下支付相关的拦截规则：${plain}"
+    echo -e "${cyan}1. .bank. 域名${plain}"
+    echo -e "${cyan}2. Visa 支付站点${plain}"
+    echo -e "${cyan}3. MyCard 支付站点${plain}"
+    echo -e "${cyan}4. Gash 支付站点${plain}"
+    echo -e "${cyan}5. Beanfun 支付站点${plain}"
+    
+    read -rp "确认移除这些拦截规则？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 使用Python处理JSON文件
+    python3 << EOF
+import json
+import re
+import sys
+
+route_file = "$route_file"
+
+# 需要移除的支付相关规则模式
+payment_patterns = [
+    r'regexp:\(\.bank\.\)',  # .bank. 域名
+    r'regexp:\(\.\*\|\|\)\(visa\|mycard\|gash\|beanfun\|bank\)\.',  # visa|mycard|gash|beanfun|bank
+    r'regexp:\(\.\*\|\|\)\(mycard\)\.\(com\|tw\)',  # mycard.(com|tw)
+    r'regexp:\(\.\*\|\|\)\(gash\)\.\(com\|tw\)',    # gash.(com|tw)
+]
+
+try:
+    # 读取配置文件
+    with open(route_file, 'r') as f:
+        config = json.load(f)
+    
+    if 'rules' not in config:
+        print("配置文件中未找到 rules 字段")
+        sys.exit(1)
+    
+    original_count = len(config['rules'])
+    removed_count = 0
+    
+    # 过滤掉支付相关的阻断规则
+    new_rules = []
+    for rule in config['rules']:
+        if rule.get('type') == 'field' and rule.get('outboundTag') == 'block':
+            domains = rule.get('domain', [])
+            if domains:
+                # 过滤掉匹配的域名规则
+                filtered_domains = []
+                for domain in domains:
+                    should_remove = False
+                    for pattern in payment_patterns:
+                        if re.search(pattern, domain):
+                            should_remove = True
+                            removed_count += 1
+                            print(f"移除规则: {domain}")
+                            break
+                    
+                    if not should_remove:
+                        filtered_domains.append(domain)
+                
+                # 如果还有其他域名规则，保留这个规则但更新域名列表
+                if filtered_domains:
+                    rule['domain'] = filtered_domains
+                    new_rules.append(rule)
+                # 如果域名列表为空但还有其他条件（如IP），也保留规则
+                elif rule.get('ip') or rule.get('protocol') or rule.get('inboundTag'):
+                    if 'domain' in rule:
+                        del rule['domain']
+                    new_rules.append(rule)
+                # 否则不添加这个规则（完全移除）
+            else:
+                # 非域名阻断规则，保留
+                new_rules.append(rule)
+        else:
+            # 非阻断规则，保留
+            new_rules.append(rule)
+    
+    # 更新配置
+    config['rules'] = new_rules
+    
+    # 写回文件
+    with open(route_file, 'w') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n处理完成:")
+    print(f"原规则数量: {original_count}")
+    print(f"当前规则数量: {len(new_rules)}")
+    print(f"移除的支付拦截规则数量: {removed_count}")
+    
+except Exception as e:
+    print(f"处理配置文件时出错: {e}")
+    sys.exit(1)
+EOF
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "\n${green}=== 银行和支付站点拦截规则移除完成 ===${plain}"
+        echo -e "${yellow}配置文件已更新：${plain}${cyan}${route_file}${plain}"
+        echo -e "${yellow}现在以下站点将不再被拦截：${plain}"
+        echo -e "  - ${cyan}所有 .bank. 域名${plain}"
+        echo -e "  - ${cyan}Visa 支付相关站点${plain}"
+        echo -e "  - ${cyan}MyCard 支付站点${plain}"
+        echo -e "  - ${cyan}Gash 支付站点${plain}"
+        echo -e "  - ${cyan}Beanfun 支付站点${plain}"
+        echo -e "\n${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
+        echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
+    else
+        echo -e "${red}移除拦截规则失败，请检查配置文件${plain}"
+        echo -e "${yellow}可以使用备份文件恢复：${plain}${cyan}cp ${backup_file} ${route_file}${plain}"
+        return 1
+    fi
+}
+
+# 显示当前支付站点拦截状态
+show_payment_block_status() {
+    echo -e "${green}=== 当前支付站点拦截状态 ===${plain}"
+    
+    local route_file="/etc/V2bX/route.json"
+    
+    if [[ ! -f "$route_file" ]]; then
+        echo -e "${red}错误：找不到路由配置文件 ${route_file}${plain}"
+        return 1
+    fi
+    
+    python3 << EOF
+import json
+import re
+
+route_file = "$route_file"
+
+# 支付相关规则模式
+payment_patterns = {
+    'bank': r'regexp:\(\.bank\.\)',
+    'visa_mycard_gash_beanfun': r'regexp:\(\.\*\|\|\)\(visa\|mycard\|gash\|beanfun\|bank\)\.',
+    'mycard_sites': r'regexp:\(\.\*\|\|\)\(mycard\)\.\(com\|tw\)',
+    'gash_sites': r'regexp:\(\.\*\|\|\)\(gash\)\.\(com\|tw\)',
+}
+
+try:
+    with open(route_file, 'r') as f:
+        config = json.load(f)
+    
+    if 'rules' not in config:
+        print("配置文件中未找到 rules 字段")
+        return
+    
+    found_blocks = {}
+    
+    # 检查是否存在支付相关的阻断规则
+    for rule in config['rules']:
+        if rule.get('type') == 'field' and rule.get('outboundTag') == 'block':
+            domains = rule.get('domain', [])
+            for domain in domains:
+                for name, pattern in payment_patterns.items():
+                    if re.search(pattern, domain):
+                        if name not in found_blocks:
+                            found_blocks[name] = []
+                        found_blocks[name].append(domain)
+    
+    if found_blocks:
+        print("发现以下支付站点拦截规则:")
+        for name, rules in found_blocks.items():
+            print(f"  {name}: {len(rules)} 条规则")
+            for rule in rules:
+                print(f"    - {rule}")
+    else:
+        print("未发现支付站点拦截规则 - 所有支付站点应该可以正常访问")
+    
+except Exception as e:
+    print(f"检查配置文件时出错: {e}")
+EOF
+}
+
+############################################################
+# 选项 6: 安装哪吒探针
+############################################################
+
+install_nezha_agent() {
+    echo -e "${green}=== 安装哪吒探针 ===${plain}"
+    
+    # 检查并安装必要依赖
+    echo -e "${yellow}正在检查必要依赖...${plain}"
+    
+    if [[ x"${release}" == x"centos" ]]; then
+        if ! command -v curl &> /dev/null; then
+            echo -e "${yellow}安装 curl...${plain}"
+            yum install -y curl
+        fi
+        if ! command -v unzip &> /dev/null; then
+            echo -e "${yellow}安装 unzip...${plain}"
+            yum install -y unzip
+        fi
+    elif [[ x"${release}" == x"debian" ]] || [[ x"${release}" == x"ubuntu" ]]; then
+        if ! command -v curl &> /dev/null || ! command -v unzip &> /dev/null; then
+            echo -e "${yellow}更新包列表...${plain}"
+            apt-get update -y
+            if ! command -v curl &> /dev/null; then
+                echo -e "${yellow}安装 curl...${plain}"
+                apt-get install -y curl
+            fi
+            if ! command -v unzip &> /dev/null; then
+                echo -e "${yellow}安装 unzip...${plain}"
+                apt-get install -y unzip
+            fi
+        fi
+    elif [[ x"${release}" == x"alpine" ]]; then
+        if ! command -v curl &> /dev/null; then
+            echo -e "${yellow}安装 curl...${plain}"
+            apk add curl
+        fi
+        if ! command -v unzip &> /dev/null; then
+            echo -e "${yellow}安装 unzip...${plain}"
+            apk add unzip
+        fi
+    elif [[ x"${release}" == x"arch" ]]; then
+        if ! command -v curl &> /dev/null; then
+            echo -e "${yellow}安装 curl...${plain}"
+            pacman -S --noconfirm curl
+        fi
+        if ! command -v unzip &> /dev/null; then
+            echo -e "${yellow}安装 unzip...${plain}"
+            pacman -S --noconfirm unzip
+        fi
+    fi
+    
+    echo -e "${green}依赖检查完成${plain}"
+    
+    # 显示配置信息
+    echo -e "\n${yellow}哪吒探针配置信息：${plain}"
+    echo -e "  服务器地址: ${cyan}194.36.145.128:8008${plain}"
+    echo -e "  TLS: ${cyan}false${plain}"
+    echo -e "  客户端密钥: ${cyan}ddFSXYzgpZh0HBD0rhO20mFpxawFuAX6${plain}"
+    
+    read -rp "确认安装哪吒探针？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}安装已取消${plain}"
+        return 0
+    fi
+    
+    echo -e "\n${green}开始安装哪吒探针...${plain}"
+    
+    # 下载并执行安装脚本
+    if curl -L https://raw.githubusercontent.com/nezhahq/scripts/main/agent/install.sh -o agent.sh; then
+        chmod +x agent.sh
+        echo -e "${green}脚本下载成功，开始安装...${plain}"
+        env NZ_SERVER=194.36.145.128:8008 NZ_TLS=false NZ_CLIENT_SECRET=ddFSXYzgpZh0HBD0rhO20mFpxawFuAX6 ./agent.sh
+        
+        # 清理临时文件
+        rm -f agent.sh
+        
+        echo -e "\n${green}哪吒探针安装完成！${plain}"
+    else
+        echo -e "${red}下载安装脚本失败，请检查网络连接${plain}"
+        return 1
+    fi
+}
+
+############################################################
+# 选项 7: 安装1Panel
+############################################################
+
+install_1panel() {
+    echo -e "${green}=== 安装1Panel ===${plain}"
+    
+    echo -e "${yellow}1Panel 是一个现代化的Linux服务器运维管理面板${plain}"
+    echo -e "${cyan}功能特性：${plain}"
+    echo -e "  - Web界面管理服务器"
+    echo -e "  - Docker容器管理"
+    echo -e "  - 网站管理"
+    echo -e "  - 数据库管理"
+    echo -e "  - 文件管理"
+    echo -e "  - 系统监控"
+    
+    read -rp "确认安装1Panel？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}安装已取消${plain}"
+        return 0
+    fi
+    
+    echo -e "\n${green}开始安装1Panel...${plain}"
+    echo -e "${yellow}注意：安装过程中可能需要您设置管理员密码${plain}"
+    
+    # 执行1Panel安装命令
+    bash -c "$(curl -sSL https://resource.fit2cloud.com/1panel/package/v2/quick_start.sh)"
+    
+    echo -e "\n${green}1Panel安装完成！${plain}"
+    echo -e "${yellow}提示：${plain}"
+    echo -e "  - 默认访问地址: ${cyan}https://你的服务器IP:安装时显示的端口${plain}"
+    echo -e "  - 请记住安装过程中设置的管理员账户和密码"
+    echo -e "  - 建议立即登录面板并修改默认设置"
+}
+
+############################################################
+# 选项 8: 执行网络测速
+############################################################
+
+run_network_speedtest() {
+    echo -e "${green}=== 网络测速工具 ===${plain}"
+    
+    echo -e "${yellow}将运行NodeQuality网络测速工具${plain}"
+    echo -e "${cyan}测试项目包括：${plain}"
+    echo -e "  - 网络延迟测试"
+    echo -e "  - 上行带宽测试"
+    echo -e "  - 下行带宽测试"
+    echo -e "  - 多地节点连通性测试"
+    
+    read -rp "确认开始网络测速？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}测速已取消${plain}"
+        return 0
+    fi
+    
+    echo -e "\n${green}开始网络测速...${plain}"
+    echo -e "${yellow}注意：测速过程可能需要几分钟时间，请耐心等待${plain}"
+    
+    # 执行测速脚本
+    bash <(curl -sL https://run.NodeQuality.com)
+    
+    echo -e "\n${green}网络测速完成！${plain}"
+}
+
+############################################################
+# 主菜单和脚本执行逻辑
+############################################################
+
+show_menu() {
+    echo -e "
+  ${green}多功能服务器工具脚本 (v2.4)${plain}
+  ---
+  ${yellow}0.${plain} 退出脚本
+  ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
+  ${yellow}2.${plain} 安装 / 更新 V2bX
+  ${yellow}3.${plain} 为 Hysteria2 节点设置出站规则
+  ${yellow}4.${plain} 为 vless/shadowsocks 节点配置出站规则
+  ${yellow}5.${plain} 移除银行和支付站点拦截规则
+  ${yellow}6.${plain} 安装哪吒探针
+  ${yellow}7.${plain} 安装1Panel管理面板
+  ${yellow}8.${plain} 执行网络测速
+  ${yellow}9.${plain} 设置isufe快捷命令
+  ---"
+    read -rp "请输入选项 [0-9]: " choice
+    
+    case $choice in
+        0)
+            exit 0
+            ;;
+        1)
+            setup_port_forwarding
+            ;;
+        2)
+            run_v2bx_installer
+            ;;
+        3)
+            setup_hy2_outbound
+            ;;
+        4)
+            setup_vless_ss_outbound
+            ;;
+        5)
+            # 提供子选项：查看状态或移除拦截
+            echo -e "\n${yellow}支付站点拦截管理：${plain}"
+            echo -e "  ${cyan}1.${plain} 查看当前拦截状态"
+            echo -e "  ${cyan}2.${plain} 移除银行和支付站点拦截规则"
+            read -rp "请选择操作 [1-2]: " payment_choice
+            
+            case $payment_choice in
+                1)
+                    show_payment_block_status
+                    ;;
+                2)
+                    remove_payment_blocks
+                    ;;
+                *)
+                    echo -e "${red}无效的选择${plain}"
+                    ;;
+            esac
+            ;;
+        6)
+            install_nezha_agent
+            ;;
+        7)
+            install_1panel
+            ;;
+        8)
+            run_network_speedtest
+            ;;
+        9)
+            setup_isufe_command
+            ;;
+        *)
+            echo -e "${red}无效的选项，请输入 0-9${plain}"
+            ;;
+    esac
+}
+
+# 设置isufe快捷命令
+setup_isufe_command() {
+    local script_path=$(realpath "$0")
+    local target_path="/usr/local/bin/isufe"
+    
+    if [[ -L "$target_path" ]] || [[ -f "$target_path" ]]; then
+        echo -e "${yellow}isufe 命令已存在${plain}"
+        return 0
+    fi
+    
+    echo -e "\n${cyan}是否设置 'isufe' 快捷命令？${plain}"
+    echo -e "${yellow}设置后您可以在任何目录下输入 'isufe' 来启动此脚本${plain}"
+    read -rp "设置快捷命令？(y/n): " setup_cmd
+    
+    if [[ "$setup_cmd" == [Yy] ]]; then
+        if ln -sf "$script_path" "$target_path"; then
+            chmod +x "$target_path"
+            echo -e "${green}快捷命令设置成功！${plain}"
+            echo -e "${cyan}现在您可以在任何地方输入 'isufe' 来启动脚本${plain}"
+        else
+            echo -e "${red}快捷命令设置失败，可能需要root权限${plain}"
+            echo -e "${yellow}手动设置命令：${plain}"
+            echo -e "${cyan}sudo ln -sf $script_path $target_path${plain}"
+            echo -e "${cyan}sudo chmod +x $target_path${plain}"
+        fi
+    fi
+}
+
+# 脚本主入口
+main() {
+    pre_check
+    
+    # 检查是否首次运行，如果是则询问是否设置快捷命令
+    if [[ ! -L "/usr/local/bin/isufe" ]] && [[ ! -f "/usr/local/bin/isufe" ]]; then
+        setup_isufe_command
+        echo ""
+    fi
+    
+    show_menu
+}
+
+# 执行主函数
+main
