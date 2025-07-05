@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.6
+#   版本: 3.7
 #====================================================
 
 # 颜色定义
@@ -1756,6 +1756,226 @@ EOF
     echo -e "• 查看日志：${cyan}tail -f /var/log/openvpn-monitor.log${plain}"
 }
 
+# 查看OpenVPN连接状态和日志
+view_openvpn_status() {
+    echo -e "${green}=== OpenVPN 连接状态和日志查看 ===${plain}"
+    
+    # 检查是否有运行中的OpenVPN服务
+    local openvpn_services=($(systemctl list-units --type=service --state=active | grep -E "openvpn|openvpn-client" | awk '{print $1}' | head -10))
+    
+    if [[ ${#openvpn_services[@]} -eq 0 ]]; then
+        echo -e "${yellow}未发现运行中的OpenVPN服务${plain}"
+        
+        # 查找所有OpenVPN配置
+        local all_services=($(systemctl list-unit-files | grep -E "openvpn.*\.service" | awk '{print $1}' | head -10))
+        
+        if [[ ${#all_services[@]} -eq 0 ]]; then
+            echo -e "${red}系统中没有找到任何OpenVPN服务配置${plain}"
+            return 1
+        else
+            echo -e "\n${cyan}找到以下OpenVPN服务（未运行）：${plain}"
+            for i in "${!all_services[@]}"; do
+                local service_name="${all_services[i]}"
+                local status=$(systemctl is-active "$service_name" 2>/dev/null)
+                echo -e "  ${yellow}$((i+1)).${plain} $service_name (状态: ${red}$status${plain})"
+            done
+            
+            echo -e "\n${yellow}您可以选择查看这些服务的状态和日志：${plain}"
+            read -rp "请选择服务编号 [1-${#all_services[@]}] 或按回车返回: " choice
+            
+            if [[ -n "$choice" ]] && [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#all_services[@]}" ]]; then
+                local selected_service="${all_services[$((choice-1))]}"
+                show_service_details "$selected_service"
+            fi
+        fi
+        return 0
+    fi
+    
+    echo -e "${green}发现 ${#openvpn_services[@]} 个运行中的OpenVPN服务：${plain}"
+    
+    # 显示运行中的服务列表
+    for i in "${!openvpn_services[@]}"; do
+        local service_name="${openvpn_services[i]}"
+        local status=$(systemctl is-active "$service_name" 2>/dev/null)
+        local uptime=$(systemctl show "$service_name" --property=ActiveEnterTimestamp --value 2>/dev/null | cut -d' ' -f2-3)
+        echo -e "  ${green}$((i+1)).${plain} $service_name (状态: ${green}$status${plain}, 启动: $uptime)"
+    done
+    
+    # 如果只有一个服务，直接显示详情
+    if [[ ${#openvpn_services[@]} -eq 1 ]]; then
+        echo -e "\n${yellow}自动显示唯一服务的详细信息：${plain}"
+        show_service_details "${openvpn_services[0]}"
+    else
+        # 让用户选择要查看的服务
+        echo -e "\n${yellow}请选择要查看详细信息的服务：${plain}"
+        read -rp "请选择服务编号 [1-${#openvpn_services[@]}]: " choice
+        
+        if [[ "$choice" =~ ^[0-9]+$ ]] && [[ "$choice" -ge 1 ]] && [[ "$choice" -le "${#openvpn_services[@]}" ]]; then
+            local selected_service="${openvpn_services[$((choice-1))]}"
+            show_service_details "$selected_service"
+        else
+            echo -e "${red}无效选择${plain}"
+            return 1
+        fi
+    fi
+}
+
+# 显示OpenVPN服务详细信息
+show_service_details() {
+    local service_name="$1"
+    
+    echo -e "\n${green}================= 服务详细信息 =================${plain}"
+    echo -e "${cyan}服务名称：${plain}$service_name"
+    
+    # 显示服务状态
+    echo -e "\n${yellow}1. 服务状态：${plain}"
+    systemctl status "$service_name" --no-pager -l
+    
+    # 显示网络连接信息
+    echo -e "\n${yellow}2. 网络连接状态：${plain}"
+    
+    # 检查tun接口
+    local tun_interfaces=$(ip link show | grep -E "tun[0-9]+" | awk -F': ' '{print $2}' | cut -d'@' -f1)
+    if [[ -n "$tun_interfaces" ]]; then
+        echo -e "${green}检测到VPN网络接口：${plain}"
+        for tun_if in $tun_interfaces; do
+            local tun_ip=$(ip addr show "$tun_if" 2>/dev/null | grep 'inet ' | awk '{print $2}' | head -1)
+            echo -e "  • $tun_if: ${cyan}${tun_ip:-未分配IP}${plain}"
+        done
+    else
+        echo -e "${red}未检测到VPN网络接口${plain}"
+    fi
+    
+    # 检查外网IP
+    echo -e "\n${yellow}3. 外网IP检测：${plain}"
+    local current_ip
+    echo -e "${cyan}正在检测当前外网IP...${plain}"
+    current_ip=$(timeout 5 curl -s ip.sb 2>/dev/null)
+    if [[ -n "$current_ip" ]]; then
+        echo -e "${green}当前外网IP: $current_ip${plain}"
+    else
+        echo -e "${yellow}尝试备用检测...${plain}"
+        current_ip=$(timeout 5 curl -s ifconfig.me 2>/dev/null)
+        if [[ -n "$current_ip" ]]; then
+            echo -e "${green}当前外网IP: $current_ip${plain}"
+        else
+            echo -e "${red}无法检测外网IP${plain}"
+        fi
+    fi
+    
+    # 检查策略路由状态
+    echo -e "\n${yellow}4. 策略路由状态：${plain}"
+    local route_rules=$(ip rule list | grep "main_route")
+    if [[ -n "$route_rules" ]]; then
+        echo -e "${green}策略路由规则已配置：${plain}"
+        echo "$route_rules" | while read -r rule; do
+            echo -e "  • $rule"
+        done
+        
+        echo -e "\n${cyan}保留路由表内容：${plain}"
+        ip route show table main_route 2>/dev/null | while read -r route; do
+            echo -e "  • $route"
+        done
+    else
+        echo -e "${yellow}未检测到策略路由规则${plain}"
+    fi
+    
+    # 显示最近日志
+    echo -e "\n${yellow}5. 最近50行日志：${plain}"
+    echo -e "${cyan}==================== 日志开始 ====================${plain}"
+    journalctl -u "$service_name" -n 50 --no-pager -o cat
+    echo -e "${cyan}==================== 日志结束 ====================${plain}"
+    
+    # 提供操作选项
+    echo -e "\n${yellow}可用操作：${plain}"
+    echo -e "  ${cyan}1.${plain} 实时查看日志"
+    echo -e "  ${cyan}2.${plain} 重启服务"
+    echo -e "  ${cyan}3.${plain} 停止服务"
+    echo -e "  ${cyan}4.${plain} 查看配置文件"
+    echo -e "  ${cyan}5.${plain} 返回"
+    
+    read -rp "请选择操作 [1-5]: " action_choice
+    
+    case $action_choice in
+        1)
+            echo -e "${green}实时日志监控（按Ctrl+C退出）：${plain}"
+            journalctl -u "$service_name" -f
+            ;;
+        2)
+            echo -e "${yellow}正在重启服务...${plain}"
+            if systemctl restart "$service_name"; then
+                echo -e "${green}服务重启成功${plain}"
+                sleep 2
+                systemctl status "$service_name" --no-pager -l
+            else
+                echo -e "${red}服务重启失败${plain}"
+            fi
+            ;;
+        3)
+            read -rp "确认停止 $service_name 服务？(y/n): " confirm_stop
+            if [[ "$confirm_stop" == [Yy] ]]; then
+                echo -e "${yellow}正在停止服务...${plain}"
+                if systemctl stop "$service_name"; then
+                    echo -e "${green}服务已停止${plain}"
+                else
+                    echo -e "${red}停止服务失败${plain}"
+                fi
+            fi
+            ;;
+        4)
+            show_openvpn_config "$service_name"
+            ;;
+        5)
+            return 0
+            ;;
+        *)
+            echo -e "${red}无效选择${plain}"
+            ;;
+    esac
+}
+
+# 显示OpenVPN配置文件
+show_openvpn_config() {
+    local service_name="$1"
+    
+    # 从服务名推断配置文件路径
+    local config_name=""
+    if [[ "$service_name" == openvpn-client@* ]]; then
+        config_name=$(echo "$service_name" | sed 's/openvpn-client@\(.*\)\.service/\1/')
+        local config_path="/etc/openvpn/client/${config_name}.conf"
+    else
+        config_name=$(echo "$service_name" | sed 's/openvpn@\(.*\)\.service/\1/')
+        local config_path="/etc/openvpn/${config_name}.conf"
+    fi
+    
+    echo -e "\n${yellow}OpenVPN配置文件：${plain}$config_path"
+    
+    if [[ -f "$config_path" ]]; then
+        echo -e "${cyan}==================== 配置文件内容 ====================${plain}"
+        cat "$config_path"
+        echo -e "${cyan}==================== 配置文件结束 ====================${plain}"
+        
+        # 检查相关脚本
+        local script_dir=$(dirname "$config_path")
+        local up_script="$script_dir/route-up.sh"
+        local down_script="$script_dir/route-down.sh"
+        
+        if [[ -f "$up_script" ]]; then
+            echo -e "\n${yellow}route-up.sh 脚本存在：${plain}$up_script"
+            echo -e "${cyan}脚本内容预览：${plain}"
+            head -20 "$up_script"
+        fi
+        
+        if [[ -f "$down_script" ]]; then
+            echo -e "\n${yellow}route-down.sh 脚本存在：${plain}$down_script"
+            echo -e "${cyan}脚本内容预览：${plain}"
+            head -20 "$down_script"
+        fi
+    else
+        echo -e "${red}配置文件不存在：$config_path${plain}"
+    fi
+}
+
 ############################################################
 # 选项 10: 一键式OpenVPN策略路由设置
 ############################################################
@@ -1776,9 +1996,10 @@ setup_openvpn_routing() {
     echo -e "  ${cyan}1.${plain} 新建OpenVPN配置 (默认)"
     echo -e "  ${cyan}2.${plain} 修改现有OpenVPN配置"
     echo -e "  ${cyan}3.${plain} 恢复原始网络设置 (清理所有VPN路由)"
+    echo -e "  ${cyan}4.${plain} 查看OpenVPN连接状态和日志"
     
     local operation_mode
-    read -rp "请选择操作模式 [1-3] (默认1): " operation_mode
+    read -rp "请选择操作模式 [1-4] (默认1): " operation_mode
     
     # 如果用户直接按回车，使用默认值1
     if [[ -z "$operation_mode" ]]; then
@@ -1796,6 +2017,11 @@ setup_openvpn_routing() {
         3)
             echo -e "\n${green}选择模式: 恢复原始网络设置${plain}"
             restore_original_network
+            return 0
+            ;;
+        4)
+            echo -e "\n${green}选择模式: 查看OpenVPN连接状态和日志${plain}"
+            view_openvpn_status
             return 0
             ;;
         *)
@@ -2461,7 +2687,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.6)${plain}
+  ${green}多功能服务器工具脚本 (v3.7)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
