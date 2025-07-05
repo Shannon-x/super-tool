@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.5
+#   版本: 3.6
 #====================================================
 
 # 颜色定义
@@ -1493,6 +1493,19 @@ restore_original_network() {
     # 清理策略路由规则
     echo -e "${yellow}正在清理策略路由规则...${plain}"
     
+    # 获取服务器主网卡和IP
+    local main_if=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5}' | head -1)
+    local server_ip=""
+    if [[ -n "$main_if" ]]; then
+        server_ip=$(ip -4 addr show "$main_if" | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+    fi
+    
+    # 删除源地址策略路由规则
+    if [[ -n "$server_ip" ]]; then
+        echo -e "${yellow}清理服务器IP($server_ip)的策略路由规则...${plain}"
+        ip rule delete from "${server_ip}/32" table main_route prio 100 >/dev/null 2>&1
+    fi
+    
     # 删除所有带有main_route表的规则
     while ip rule list | grep -q "main_route"; do
         local rule_prio=$(ip rule list | grep "main_route" | head -1 | awk '{print $1}' | tr -d ':')
@@ -1503,35 +1516,8 @@ restore_original_network() {
         fi
     done
     
-    # 删除所有带有fwmark 0x100的规则
-    while ip rule list | grep -q "fwmark 0x100"; do
-        local rule_prio=$(ip rule list | grep "fwmark 0x100" | head -1 | awk '{print $1}' | tr -d ':')
-        if [[ -n "$rule_prio" ]]; then
-            ip rule del prio "$rule_prio" >/dev/null 2>&1
-        else
-            break
-        fi
-    done
-    
     # 清空main_route路由表
     ip route flush table main_route >/dev/null 2>&1
-    
-    # 清理iptables规则
-    echo -e "${yellow}正在清理iptables规则...${plain}"
-    
-    # 清理mangle表中的MARK和CONNMARK规则
-    iptables -t mangle -D PREROUTING -j CONNMARK --save-mark >/dev/null 2>&1
-    iptables -t mangle -D OUTPUT -j CONNMARK --restore-mark >/dev/null 2>&1
-    
-    # 清理所有带有MARK --set-mark 0x100的规则
-    while iptables -t mangle -L PREROUTING -n --line-numbers | grep -q "MARK.*0x100"; do
-        local line_num=$(iptables -t mangle -L PREROUTING -n --line-numbers | grep "MARK.*0x100" | head -1 | awk '{print $1}')
-        if [[ -n "$line_num" ]]; then
-            iptables -t mangle -D PREROUTING "$line_num" >/dev/null 2>&1
-        else
-            break
-        fi
-    done
     
     # 恢复内核参数
     echo -e "${yellow}正在恢复内核参数...${plain}"
@@ -1591,7 +1577,6 @@ create_network_monitor() {
 CHECK_INTERVAL=30  # 检查间隔（秒）
 RETRY_COUNT=3      # 重试次数
 LOG_FILE="/var/log/openvpn-monitor.log"
-FWMARK="0x100"
 TABLE_ID="main_route"
 
 # 颜色定义
@@ -1648,19 +1633,22 @@ restore_network() {
     systemctl stop openvpn-client@*.service >/dev/null 2>&1
     systemctl stop openvpn@*.service >/dev/null 2>&1
     
-    # 清理策略路由规则
-    while ip rule list | grep -q "main_route"; do
-        local rule_prio=$(ip rule list | grep "main_route" | head -1 | awk '{print $1}' | tr -d ':')
-        if [[ -n "$rule_prio" ]]; then
-            ip rule del prio "$rule_prio" >/dev/null 2>&1
-        else
-            break
-        fi
-    done
+    # 获取主网卡和服务器IP
+    local main_if=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5}' | head -1)
+    local server_ip=""
+    if [[ -n "$main_if" ]]; then
+        server_ip=$(ip -4 addr show "$main_if" | awk '/inet /{print $2}' | cut -d/ -f1 | head -1)
+    fi
     
-    # 清理fwmark规则
-    while ip rule list | grep -q "fwmark $FWMARK"; do
-        local rule_prio=$(ip rule list | grep "fwmark $FWMARK" | head -1 | awk '{print $1}' | tr -d ':')
+    # 删除源地址策略路由规则
+    if [[ -n "$server_ip" ]]; then
+        log_message "INFO" "清理服务器IP($server_ip)的策略路由规则"
+        ip rule delete from "${server_ip}/32" table "$TABLE_ID" prio 100 >/dev/null 2>&1
+    fi
+    
+    # 清理所有main_route相关的策略路由规则
+    while ip rule list | grep -q "$TABLE_ID"; do
+        local rule_prio=$(ip rule list | grep "$TABLE_ID" | head -1 | awk '{print $1}' | tr -d ':')
         if [[ -n "$rule_prio" ]]; then
             ip rule del prio "$rule_prio" >/dev/null 2>&1
         else
@@ -1671,26 +1659,11 @@ restore_network() {
     # 清空路由表
     ip route flush table "$TABLE_ID" >/dev/null 2>&1
     
-    # 清理iptables规则
-    iptables -t mangle -D PREROUTING -j CONNMARK --save-mark >/dev/null 2>&1
-    iptables -t mangle -D OUTPUT -j CONNMARK --restore-mark >/dev/null 2>&1
-    
-    # 清理MARK规则
-    while iptables -t mangle -L PREROUTING -n --line-numbers | grep -q "MARK.*$FWMARK"; do
-        local line_num=$(iptables -t mangle -L PREROUTING -n --line-numbers | grep "MARK.*$FWMARK" | head -1 | awk '{print $1}')
-        if [[ -n "$line_num" ]]; then
-            iptables -t mangle -D PREROUTING "$line_num" >/dev/null 2>&1
-        else
-            break
-        fi
-    done
-    
     # 恢复内核参数
     sysctl -w net.ipv4.conf.all.rp_filter=1 >/dev/null 2>&1
     sysctl -w net.ipv4.conf.default.rp_filter=1 >/dev/null 2>&1
     
     # 检测主网卡并恢复其rp_filter
-    local main_if=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5}' | head -1)
     if [[ -n "$main_if" ]]; then
         sysctl -w net.ipv4.conf.${main_if}.rp_filter=1 >/dev/null 2>&1
     fi
@@ -1790,14 +1763,14 @@ EOF
 setup_openvpn_routing() {
     echo -e "${green}=== 一键式OpenVPN策略路由设置 ===${plain}"
     
-    echo -e "${yellow}此功能将帮助您设置OpenVPN策略路由，保持SSH连接不断开${plain}"
+    echo -e "${yellow}此功能将帮助您设置OpenVPN策略路由，保持所有入站端口可访问${plain}"
     echo -e "${cyan}功能特性：${plain}"
-    echo -e "  - 自动检测网络环境"
-    echo -e "  - 创建独立路由表保留SSH连接"
-    echo -e "  - 生成route-up和route-down脚本"
-    echo -e "  - 修改OpenVPN配置启用策略路由"
-    echo -e "  - 所有出站流量通过VPN，SSH连接保持直连"
-    echo -e "  - ${green}新增：VPN断线自动恢复原始网络设置${plain}"
+    echo -e "  - 自动检测网络环境和服务器IP"
+    echo -e "  - 基于源地址的策略路由（更稳定可靠）"
+    echo -e "  - 保持所有入站端口（SSH、HTTP等）正常可访问"
+    echo -e "  - 服务器主动发起的流量通过VPN出站"
+    echo -e "  - 无需复杂的iptables规则，兼容性更好"
+    echo -e "  - ${green}VPN断线自动恢复原始网络设置${plain}"
     
     echo -e "\n${yellow}请选择操作模式：${plain}"
     echo -e "  ${cyan}1.${plain} 新建OpenVPN配置 (默认)"
@@ -2053,30 +2026,47 @@ create_route_scripts() {
     local up_script="$script_dir/route-up.sh"
     local down_script="$script_dir/route-down.sh"
 
-    echo -e "${YELLOW}正在创建优化的 route-up.sh 脚本...${NC}"
+    echo -e "${YELLOW}正在创建优化的 route-up.sh 脚本（基于源地址策略路由）...${NC}"
     cat << EOL > "$up_script"
 #!/bin/bash
 # -- 根据您的环境自动填充的变量 --
 GATEWAY_IP="${GATEWAY_IP}"
 MAIN_IF="${MAIN_IF}"
 # -- 配置参数 --
-FWMARK="0x100"
 TABLE_ID="main_route"
+
 # 等待网络接口就绪
 sleep 5
+
 # --- 第1部分：确保内核参数允许策略路由 ---
 sysctl -w net.ipv4.conf.all.rp_filter=2
 sysctl -w net.ipv4.conf.default.rp_filter=2
 sysctl -w net.ipv4.conf.\${MAIN_IF}.rp_filter=2
-# --- 第2部分：配置iptables，为入站连接打标记 ---
-iptables -t mangle -A PREROUTING -i \${MAIN_IF} -j MARK --set-mark \${FWMARK}
-iptables -t mangle -A PREROUTING -j CONNMARK --save-mark
-iptables -t mangle -A OUTPUT -j CONNMARK --restore-mark
+
+# --- 第2部分：获取服务器公网IP ---
+SERVER_IP=\$(ip -4 addr show \${MAIN_IF} | awk '/inet /{print \$2}' | cut -d/ -f1 | head -1)
+if [[ -z "\$SERVER_IP" ]]; then
+    echo "错误：无法获取服务器IP地址"
+    exit 1
+fi
+echo "检测到服务器IP: \$SERVER_IP"
+
 # --- 第3部分：配置策略路由 ---
+# 创建保留路由表，所有流量通过原网关
 ip route replace default via \${GATEWAY_IP} dev \${MAIN_IF} table \${TABLE_ID}
-ip rule add fwmark \${FWMARK} table \${TABLE_ID} prio 100
+
+# 源地址策略：凡是源为公网IP的包一律走保留表
+# 这确保所有入站连接的回复都通过原网关返回
+ip rule add from \${SERVER_IP}/32 table \${TABLE_ID} prio 100
+
 # --- 第4部分：刷新路由缓存 ---
 ip route flush cache
+
+echo "策略路由设置完成："
+echo "- 服务器IP: \$SERVER_IP"
+echo "- 所有从 \$SERVER_IP 发出的流量将通过原网关(\${GATEWAY_IP})路由"
+echo "- 其他流量将通过VPN路由"
+
 exit 0
 EOL
     echo -e "${GREEN}  -> 脚本 '$up_script' 已创建。${NC}"
@@ -2084,21 +2074,31 @@ EOL
     echo -e "${YELLOW}正在创建优化的 route-down.sh 脚本...${NC}"
     cat << EOL > "$down_script"
 #!/bin/bash
-FWMARK="0x100"
-TABLE_ID="main_route"
+# -- 根据您的环境自动填充的变量 --
 MAIN_IF="${MAIN_IF}"
-# -- 清除规则 (与添加顺序相反) --
-ip rule del prio 100
-ip route flush table \${TABLE_ID}
-iptables -t mangle -D OUTPUT -j CONNMARK --restore-mark
-iptables -t mangle -D PREROUTING -j CONNMARK --save-mark
-iptables -t mangle -D PREROUTING -i \${MAIN_IF} -j MARK --set-mark \${FWMARK}
-# -- 恢复内核默认值 --
-sysctl -w net.ipv4.conf.all.rp_filter=1
-sysctl -w net.ipv4.conf.default.rp_filter=1
-sysctl -w net.ipv4.conf.\${MAIN_IF}.rp_filter=1
+TABLE_ID="main_route"
+
+# --- 获取服务器公网IP ---
+SERVER_IP=\$(ip -4 addr show \${MAIN_IF} | awk '/inet /{print \$2}' | cut -d/ -f1 | head -1)
+
+# --- 清除策略路由规则 ---
+if [[ -n "\$SERVER_IP" ]]; then
+    ip rule delete from \${SERVER_IP}/32 table \${TABLE_ID} prio 100 2>/dev/null
+    echo "已删除源地址策略路由规则: \$SERVER_IP"
+fi
+
+# 清空路由表
+ip route flush table \${TABLE_ID} 2>/dev/null
+
+# --- 恢复内核默认值 ---
+sysctl -w net.ipv4.conf.all.rp_filter=1 >/dev/null 2>&1
+sysctl -w net.ipv4.conf.default.rp_filter=1 >/dev/null 2>&1
+sysctl -w net.ipv4.conf.\${MAIN_IF}.rp_filter=1 >/dev/null 2>&1
+
 # 刷新路由缓存
 ip route flush cache
+
+echo "网络设置已恢复到原始状态"
 exit 0
 EOL
     echo -e "${GREEN}  -> 脚本 '$down_script' 已创建。${NC}"
@@ -2461,7 +2461,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.5)${plain}
+  ${green}多功能服务器工具脚本 (v3.6)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
