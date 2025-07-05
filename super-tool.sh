@@ -17,7 +17,7 @@
 #   功能 12: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.4
+#   版本: 3.5
 #====================================================
 
 # 颜色定义
@@ -1468,6 +1468,322 @@ run_network_speedtest() {
 }
 
 ############################################################
+# 网络恢复和监控功能
+############################################################
+
+# 恢复原始网络设置
+restore_original_network() {
+    echo -e "${green}=== 恢复原始网络设置 ===${plain}"
+    echo -e "${yellow}此功能将清理所有VPN相关的路由规则和iptables规则${plain}"
+    echo -e "${red}警告：这将断开所有VPN连接并恢复原始网络设置${plain}"
+    
+    read -rp "确认执行网络恢复？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    echo -e "\n${green}开始恢复原始网络设置...${plain}"
+    
+    # 停止所有OpenVPN服务
+    echo -e "${yellow}正在停止OpenVPN服务...${plain}"
+    systemctl stop openvpn-client@*.service >/dev/null 2>&1
+    systemctl stop openvpn@*.service >/dev/null 2>&1
+    
+    # 清理策略路由规则
+    echo -e "${yellow}正在清理策略路由规则...${plain}"
+    
+    # 删除所有带有main_route表的规则
+    while ip rule list | grep -q "main_route"; do
+        local rule_prio=$(ip rule list | grep "main_route" | head -1 | awk '{print $1}' | tr -d ':')
+        if [[ -n "$rule_prio" ]]; then
+            ip rule del prio "$rule_prio" >/dev/null 2>&1
+        else
+            break
+        fi
+    done
+    
+    # 删除所有带有fwmark 0x100的规则
+    while ip rule list | grep -q "fwmark 0x100"; do
+        local rule_prio=$(ip rule list | grep "fwmark 0x100" | head -1 | awk '{print $1}' | tr -d ':')
+        if [[ -n "$rule_prio" ]]; then
+            ip rule del prio "$rule_prio" >/dev/null 2>&1
+        else
+            break
+        fi
+    done
+    
+    # 清空main_route路由表
+    ip route flush table main_route >/dev/null 2>&1
+    
+    # 清理iptables规则
+    echo -e "${yellow}正在清理iptables规则...${plain}"
+    
+    # 清理mangle表中的MARK和CONNMARK规则
+    iptables -t mangle -D PREROUTING -j CONNMARK --save-mark >/dev/null 2>&1
+    iptables -t mangle -D OUTPUT -j CONNMARK --restore-mark >/dev/null 2>&1
+    
+    # 清理所有带有MARK --set-mark 0x100的规则
+    while iptables -t mangle -L PREROUTING -n --line-numbers | grep -q "MARK.*0x100"; do
+        local line_num=$(iptables -t mangle -L PREROUTING -n --line-numbers | grep "MARK.*0x100" | head -1 | awk '{print $1}')
+        if [[ -n "$line_num" ]]; then
+            iptables -t mangle -D PREROUTING "$line_num" >/dev/null 2>&1
+        else
+            break
+        fi
+    done
+    
+    # 恢复内核参数
+    echo -e "${yellow}正在恢复内核参数...${plain}"
+    sysctl -w net.ipv4.conf.all.rp_filter=1 >/dev/null 2>&1
+    sysctl -w net.ipv4.conf.default.rp_filter=1 >/dev/null 2>&1
+    
+    # 检测主网卡并恢复其rp_filter
+    local main_if=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5}' | head -1)
+    if [[ -n "$main_if" ]]; then
+        sysctl -w net.ipv4.conf.${main_if}.rp_filter=1 >/dev/null 2>&1
+    fi
+    
+    # 刷新路由缓存
+    ip route flush cache >/dev/null 2>&1
+    
+    echo -e "${green}网络设置恢复完成！${plain}"
+    echo -e "${yellow}正在验证网络连通性...${plain}"
+    
+    # 验证网络连通性
+    local current_ip
+    current_ip=$(timeout 10 curl -s ip.sb 2>/dev/null)
+    if [[ -n "$current_ip" ]]; then
+        echo -e "${green}✓ 网络连通性正常${plain}"
+        echo -e "${green}✓ 当前外网IP: $current_ip${plain}"
+    else
+        echo -e "${yellow}正在尝试备用检测方法...${plain}"
+        current_ip=$(timeout 10 curl -s ifconfig.me 2>/dev/null)
+        if [[ -n "$current_ip" ]]; then
+            echo -e "${green}✓ 网络连通性正常${plain}"
+            echo -e "${green}✓ 当前外网IP: $current_ip${plain}"
+        else
+            echo -e "${red}! 无法获取外网IP，请手动检查网络连接${plain}"
+        fi
+    fi
+    
+    echo -e "\n${green}原始网络设置已恢复！${plain}"
+    echo -e "${cyan}说明：${plain}"
+    echo -e "• 所有VPN连接已断开"
+    echo -e "• 策略路由规则已清理"
+    echo -e "• 网络设置已恢复到初始状态"
+    echo -e "• SSH连接应该保持正常"
+}
+
+# 创建网络监控脚本
+create_network_monitor() {
+    local monitor_script="/usr/local/bin/openvpn-monitor.sh"
+    
+    echo -e "${yellow}正在创建网络监控脚本...${plain}"
+    
+    cat << 'EOF' > "$monitor_script"
+#!/bin/bash
+
+# OpenVPN网络监控和自动恢复脚本
+# 当VPN断线时自动恢复原始网络设置
+
+# 配置参数
+CHECK_INTERVAL=30  # 检查间隔（秒）
+RETRY_COUNT=3      # 重试次数
+LOG_FILE="/var/log/openvpn-monitor.log"
+FWMARK="0x100"
+TABLE_ID="main_route"
+
+# 颜色定义
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m'
+
+# 日志函数
+log_message() {
+    local level="$1"
+    local message="$2"
+    local timestamp=$(date '+%Y-%m-%d %H:%M:%S')
+    echo -e "[$timestamp] [$level] $message" | tee -a "$LOG_FILE"
+}
+
+# 检查网络连通性
+check_network() {
+    local test_urls=("8.8.8.8" "1.1.1.1" "114.114.114.114")
+    local success=0
+    
+    for url in "${test_urls[@]}"; do
+        if ping -c 1 -W 3 "$url" >/dev/null 2>&1; then
+            success=1
+            break
+        fi
+    done
+    
+    return $((1 - success))
+}
+
+# 检查OpenVPN服务状态
+check_openvpn_service() {
+    local services=$(systemctl list-units --type=service --state=active | grep -E "openvpn|openvpn-client" | awk '{print $1}')
+    
+    if [[ -z "$services" ]]; then
+        return 1  # 没有活动的OpenVPN服务
+    fi
+    
+    for service in $services; do
+        if systemctl is-active "$service" >/dev/null 2>&1; then
+            return 0  # 至少有一个服务是活动的
+        fi
+    done
+    
+    return 1  # 所有服务都不活动
+}
+
+# 恢复原始网络设置
+restore_network() {
+    log_message "INFO" "开始恢复原始网络设置..."
+    
+    # 停止OpenVPN服务
+    systemctl stop openvpn-client@*.service >/dev/null 2>&1
+    systemctl stop openvpn@*.service >/dev/null 2>&1
+    
+    # 清理策略路由规则
+    while ip rule list | grep -q "main_route"; do
+        local rule_prio=$(ip rule list | grep "main_route" | head -1 | awk '{print $1}' | tr -d ':')
+        if [[ -n "$rule_prio" ]]; then
+            ip rule del prio "$rule_prio" >/dev/null 2>&1
+        else
+            break
+        fi
+    done
+    
+    # 清理fwmark规则
+    while ip rule list | grep -q "fwmark $FWMARK"; do
+        local rule_prio=$(ip rule list | grep "fwmark $FWMARK" | head -1 | awk '{print $1}' | tr -d ':')
+        if [[ -n "$rule_prio" ]]; then
+            ip rule del prio "$rule_prio" >/dev/null 2>&1
+        else
+            break
+        fi
+    done
+    
+    # 清空路由表
+    ip route flush table "$TABLE_ID" >/dev/null 2>&1
+    
+    # 清理iptables规则
+    iptables -t mangle -D PREROUTING -j CONNMARK --save-mark >/dev/null 2>&1
+    iptables -t mangle -D OUTPUT -j CONNMARK --restore-mark >/dev/null 2>&1
+    
+    # 清理MARK规则
+    while iptables -t mangle -L PREROUTING -n --line-numbers | grep -q "MARK.*$FWMARK"; do
+        local line_num=$(iptables -t mangle -L PREROUTING -n --line-numbers | grep "MARK.*$FWMARK" | head -1 | awk '{print $1}')
+        if [[ -n "$line_num" ]]; then
+            iptables -t mangle -D PREROUTING "$line_num" >/dev/null 2>&1
+        else
+            break
+        fi
+    done
+    
+    # 恢复内核参数
+    sysctl -w net.ipv4.conf.all.rp_filter=1 >/dev/null 2>&1
+    sysctl -w net.ipv4.conf.default.rp_filter=1 >/dev/null 2>&1
+    
+    # 检测主网卡并恢复其rp_filter
+    local main_if=$(ip route get 8.8.8.8 2>/dev/null | awk '/dev/ {print $5}' | head -1)
+    if [[ -n "$main_if" ]]; then
+        sysctl -w net.ipv4.conf.${main_if}.rp_filter=1 >/dev/null 2>&1
+    fi
+    
+    # 刷新路由缓存
+    ip route flush cache >/dev/null 2>&1
+    
+    log_message "INFO" "网络设置恢复完成"
+}
+
+# 主监控循环
+main_monitor() {
+    log_message "INFO" "OpenVPN网络监控服务启动"
+    
+    while true; do
+        # 检查OpenVPN服务是否运行
+        if check_openvpn_service; then
+            # OpenVPN服务正在运行，检查网络连通性
+            local retry=0
+            local network_ok=0
+            
+            while [[ $retry -lt $RETRY_COUNT ]]; do
+                if check_network; then
+                    network_ok=1
+                    break
+                fi
+                retry=$((retry + 1))
+                sleep 5
+            done
+            
+            if [[ $network_ok -eq 0 ]]; then
+                log_message "ERROR" "网络连通性检查失败，执行自动恢复"
+                restore_network
+                
+                # 验证恢复后的网络连通性
+                sleep 10
+                if check_network; then
+                    log_message "INFO" "网络恢复成功"
+                else
+                    log_message "ERROR" "网络恢复失败，请手动检查"
+                fi
+            fi
+        fi
+        
+        sleep "$CHECK_INTERVAL"
+    done
+}
+
+# 检查是否以root权限运行
+if [[ $EUID -ne 0 ]]; then
+    echo -e "${RED}错误：此脚本必须以root权限运行${NC}"
+    exit 1
+fi
+
+# 创建日志文件
+touch "$LOG_FILE"
+
+# 启动监控
+main_monitor
+EOF
+    
+    chmod +x "$monitor_script"
+    echo -e "${green}网络监控脚本已创建：$monitor_script${plain}"
+    
+    # 创建systemd服务文件
+    local service_file="/etc/systemd/system/openvpn-monitor.service"
+    
+    cat << EOF > "$service_file"
+[Unit]
+Description=OpenVPN Network Monitor
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=$monitor_script
+Restart=always
+RestartSec=10
+User=root
+
+[Install]
+WantedBy=multi-user.target
+EOF
+    
+    systemctl daemon-reload
+    echo -e "${green}监控服务已创建：openvpn-monitor.service${plain}"
+    echo -e "${yellow}使用以下命令管理监控服务：${plain}"
+    echo -e "• 启动监控：${cyan}systemctl start openvpn-monitor${plain}"
+    echo -e "• 停止监控：${cyan}systemctl stop openvpn-monitor${plain}"
+    echo -e "• 开机自启：${cyan}systemctl enable openvpn-monitor${plain}"
+    echo -e "• 查看日志：${cyan}tail -f /var/log/openvpn-monitor.log${plain}"
+}
+
+############################################################
 # 选项 10: 一键式OpenVPN策略路由设置
 ############################################################
 
@@ -1481,13 +1797,15 @@ setup_openvpn_routing() {
     echo -e "  - 生成route-up和route-down脚本"
     echo -e "  - 修改OpenVPN配置启用策略路由"
     echo -e "  - 所有出站流量通过VPN，SSH连接保持直连"
+    echo -e "  - ${green}新增：VPN断线自动恢复原始网络设置${plain}"
     
     echo -e "\n${yellow}请选择操作模式：${plain}"
     echo -e "  ${cyan}1.${plain} 新建OpenVPN配置 (默认)"
     echo -e "  ${cyan}2.${plain} 修改现有OpenVPN配置"
+    echo -e "  ${cyan}3.${plain} 恢复原始网络设置 (清理所有VPN路由)"
     
     local operation_mode
-    read -rp "请选择操作模式 [1-2] (默认1): " operation_mode
+    read -rp "请选择操作模式 [1-3] (默认1): " operation_mode
     
     # 如果用户直接按回车，使用默认值1
     if [[ -z "$operation_mode" ]]; then
@@ -1501,6 +1819,11 @@ setup_openvpn_routing() {
             ;;
         2)
             echo -e "\n${green}选择模式: 修改现有OpenVPN配置${plain}"
+            ;;
+        3)
+            echo -e "\n${green}选择模式: 恢复原始网络设置${plain}"
+            restore_original_network
+            return 0
             ;;
         *)
             echo -e "${red}无效选择，使用默认模式: 新建OpenVPN配置${plain}"
@@ -1973,6 +2296,31 @@ EOF
     rm -f "$temp_script"
     
     echo -e "\n${green}OpenVPN策略路由设置完成！${plain}"
+    
+    # 询问用户是否要启动网络监控服务
+    echo -e "\n${yellow}=== 网络监控服务设置 ===${plain}"
+    echo -e "${cyan}推荐启用网络监控服务，当VPN断线时自动恢复原始网络设置${plain}"
+    read -rp "是否创建并启动网络监控服务？(y/n): " enable_monitor
+    
+    if [[ "$enable_monitor" == [Yy] ]]; then
+        create_network_monitor
+        
+        echo -e "\n${yellow}是否立即启动监控服务？${plain}"
+        read -rp "启动监控服务？(y/n): " start_monitor
+        
+        if [[ "$start_monitor" == [Yy] ]]; then
+            systemctl start openvpn-monitor
+            systemctl enable openvpn-monitor
+            echo -e "${green}✓ 网络监控服务已启动并设置为开机自启${plain}"
+            echo -e "${cyan}监控日志：tail -f /var/log/openvpn-monitor.log${plain}"
+        else
+            echo -e "${yellow}监控服务已创建但未启动${plain}"
+            echo -e "${cyan}手动启动：systemctl start openvpn-monitor${plain}"
+        fi
+    else
+        echo -e "${yellow}跳过网络监控服务设置${plain}"
+        echo -e "${cyan}如需手动恢复网络设置，请运行脚本选择选项10-3${plain}"
+    fi
 }
 
 ############################################################
@@ -2113,7 +2461,7 @@ update_script() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.4)${plain}
+  ${green}多功能服务器工具脚本 (v3.5)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
@@ -2125,7 +2473,7 @@ show_menu() {
   ${yellow}7.${plain} 安装1Panel管理面板
   ${yellow}8.${plain} 执行网络测速
   ${yellow}9.${plain} 设置isufe快捷命令
-  ${yellow}10.${plain} 一键式OpenVPN策略路由设置
+  ${yellow}10.${plain} 一键式OpenVPN策略路由设置 (含故障恢复)
   ${yellow}11.${plain} 安装3x-ui面板
   ${yellow}12.${plain} 更新脚本到最新版本
   ---"
