@@ -1292,7 +1292,7 @@ try:
     
     if 'rules' not in config:
         print("配置文件中未找到 rules 字段")
-        return
+        exit(1)
     
     found_blocks = {}
     
