@@ -7,17 +7,19 @@
 #   功能 2: 安装/更新 V2bX
 #   功能 3: 为 Hysteria2 节点设置出站规则
 #   功能 4: 为 vless/shadowsocks 节点配置出站规则
-#   功能 5: 移除银行和支付站点拦截规则
+#   功能 5: 移除银行和支付站点拦截规则 / shadowsocks节点安全管理
 #   功能 6: 安装哪吒探针
 #   功能 7: 安装1Panel管理面板
 #   功能 8: 执行网络测速
 #   功能 9: 设置isufe快捷命令
 #   功能 10: 一键式OpenVPN策略路由设置
 #   功能 11: 安装3x-ui面板
-#   功能 12: 更新脚本到最新版本
+#   功能 12: DD系统重装 (使用reinstall脚本)
+#   功能 13: 修改主机名与登录信息
+#   功能 14: 更新脚本到最新版本
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.7
+#   版本: 3.9
 #====================================================
 
 # 颜色定义
@@ -1319,6 +1321,207 @@ except Exception as e:
 EOF
 }
 
+# 检查shadowsocks节点并添加中国大陆禁止规则
+check_and_block_ss_china() {
+    echo -e "${green}=== 检查shadowsocks节点并添加中国大陆禁止规则 ===${plain}"
+    
+    local config_file="/etc/V2bX/config.json"
+    local route_file="/etc/V2bX/route.json"
+    
+    # 检查配置文件
+    if [[ ! -f "$config_file" ]]; then
+        echo -e "${red}错误：找不到 V2bX 配置文件 ${config_file}${plain}"
+        return 1
+    fi
+    
+    if [[ ! -f "$route_file" ]]; then
+        echo -e "${red}错误：找不到路由配置文件 ${route_file}${plain}"
+        return 1
+    fi
+    
+    echo -e "${yellow}正在扫描shadowsocks节点...${plain}"
+    
+    # 使用Python扫描shadowsocks节点
+    local ss_nodes_info
+    ss_nodes_info=$(python3 << 'EOF'
+import json
+import sys
+
+config_file = "/etc/V2bX/config.json"
+
+try:
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    ss_nodes = []
+    if 'Nodes' in config:
+        for node in config['Nodes']:
+            if node.get('NodeType') == 'shadowsocks':
+                ss_nodes.append({
+                    'NodeID': node.get('NodeID'),
+                    'ApiHost': node.get('ApiHost', ''),
+                    'NodeType': node.get('NodeType')
+                })
+    
+    if ss_nodes:
+        print(f"找到 {len(ss_nodes)} 个shadowsocks节点:")
+        for i, node in enumerate(ss_nodes, 1):
+            api_host = node['ApiHost'].replace('https://', '').replace('http://', '')
+            print(f"{i}. NodeID: {node['NodeID']}, ApiHost: {api_host}")
+            print(f"SS_NODE:{node['NodeID']}:{api_host}")
+    else:
+        print("未找到shadowsocks节点")
+        sys.exit(1)
+        
+except Exception as e:
+    print(f"扫描节点失败: {e}")
+    sys.exit(1)
+EOF
+    )
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}未找到shadowsocks节点或扫描失败${plain}"
+        return 1
+    fi
+    
+    # 显示找到的节点
+    echo -e "${cyan}$ss_nodes_info${plain}" | grep -v "^SS_NODE:"
+    
+    # 提取节点信息
+    local ss_nodes=()
+    while IFS= read -r line; do
+        if [[ "$line" =~ ^SS_NODE:(.+):(.+)$ ]]; then
+            ss_nodes+=("${BASH_REMATCH[1]}:${BASH_REMATCH[2]}")
+        fi
+    done <<< "$ss_nodes_info"
+    
+    if [[ ${#ss_nodes[@]} -eq 0 ]]; then
+        echo -e "${red}未找到有效的shadowsocks节点${plain}"
+        return 1
+    fi
+    
+    echo -e "\n${yellow}将为以下shadowsocks节点添加中国大陆禁止规则：${plain}"
+    for node_info in "${ss_nodes[@]}"; do
+        IFS=':' read -r node_id api_host <<< "$node_info"
+        echo -e "  ${cyan}- 节点ID: ${node_id}, ApiHost: ${api_host}${plain}"
+    done
+    
+    read -rp "确认为这些shadowsocks节点添加中国大陆禁止规则？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 备份路由配置文件
+    local backup_file="${route_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$route_file" "$backup_file"
+    echo -e "${green}已备份路由配置文件到：${plain}${backup_file}"
+    
+    # 构建节点映射字符串
+    local node_mappings=""
+    for node_info in "${ss_nodes[@]}"; do
+        IFS=':' read -r node_id api_host <<< "$node_info"
+        if [[ -n "$node_mappings" ]]; then
+            node_mappings="${node_mappings},${node_id}:shadowsocks:${api_host}"
+        else
+            node_mappings="${node_id}:shadowsocks:${api_host}"
+        fi
+    done
+    
+    echo -e "\n${yellow}正在添加中国大陆禁止规则...${plain}"
+    
+    # 使用Python添加中国大陆禁止规则
+    python3 << EOF
+import json
+import sys
+
+route_file = "$route_file"
+mappings_str = "$node_mappings"
+
+# 解析节点映射
+node_mappings = {}
+if mappings_str:
+    for mapping in mappings_str.split(','):
+        if mapping.strip():
+            parts = mapping.strip().split(':')
+            if len(parts) == 3:
+                node_id, node_type, api_host = parts
+                node_mappings[node_id] = {
+                    'type': node_type,
+                    'host': api_host
+                }
+
+try:
+    # 读取现有路由配置
+    with open(route_file, 'r') as f:
+        config = json.load(f)
+    
+    if 'rules' not in config:
+        config['rules'] = []
+    
+    # 检查是否已存在相同的规则
+    existing_rules = set()
+    for rule in config['rules']:
+        if rule.get('type') == 'field' and rule.get('outboundTag') == 'block':
+            inbound_tags = rule.get('inboundTag', [])
+            source = rule.get('source', [])
+            if 'geoip:cn' in source and inbound_tags:
+                for tag in inbound_tags:
+                    existing_rules.add(tag)
+    
+    # 为shadowsocks节点添加阻止中国大陆连接的规则
+    added_count = 0
+    for node_id, info in node_mappings.items():
+        inbound_tag = f"[{info['host']}]-shadowsocks:{node_id}"
+        
+        # 检查是否已存在
+        if inbound_tag in existing_rules:
+            print(f"节点 {node_id} 已存在中国大陆禁止规则，跳过")
+            continue
+        
+        block_rule = {
+            "type": "field",
+            "inboundTag": [inbound_tag],
+            "source": ["geoip:cn"],
+            "outboundTag": "block",
+            "ruleTag": f"block-china-ss{node_id}"
+        }
+        
+        # 插入到规则列表开头，确保优先级
+        config["rules"].insert(0, block_rule)
+        added_count += 1
+        print(f"已为节点 {node_id} ({info['host']}) 添加中国大陆禁止规则")
+    
+    # 写回文件
+    with open(route_file, 'w') as f:
+        json.dump(config, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n处理完成:")
+    print(f"总shadowsocks节点数: {len(node_mappings)}")
+    print(f"新增中国大陆禁止规则数: {added_count}")
+    print(f"当前总规则数: {len(config['rules'])}")
+    
+except Exception as e:
+    print(f"处理路由配置时出错: {e}")
+    sys.exit(1)
+EOF
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "\n${green}=== shadowsocks节点中国大陆禁止规则添加完成 ===${plain}"
+        echo -e "${yellow}配置文件已更新：${plain}${cyan}${route_file}${plain}"
+        echo -e "${yellow}规则效果：${plain}"
+        echo -e "  - ${cyan}来自中国大陆的IP将无法直接连接shadowsocks节点${plain}"
+        echo -e "  - ${cyan}有效防止国内用户直接访问节点IP${plain}"
+        echo -e "  - ${cyan}提高节点的安全性和隐蔽性${plain}"
+        echo -e "\n${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
+        echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
+    else
+        echo -e "${red}添加中国大陆禁止规则失败，请检查配置文件${plain}"
+        echo -e "${yellow}可以使用备份文件恢复：${plain}${cyan}cp ${backup_file} ${route_file}${plain}"
+        return 1
+    fi
+}
+
 ############################################################
 # 选项 6: 安装哪吒探针
 ############################################################
@@ -2586,7 +2789,7 @@ install_3xui() {
 }
 
 ############################################################
-# 选项 12: 更新脚本到最新版本
+# 选项 14: 更新脚本到最新版本
 ############################################################
 
 update_script() {
@@ -2682,28 +2885,634 @@ update_script() {
 }
 
 ############################################################
+# 选项 12: DD系统重装功能 (使用reinstall脚本)
+############################################################
+
+# 显示支持的系统列表
+show_supported_systems() {
+    echo -e "${green}=== 支持的系统列表 ===${plain}"
+    echo -e "${cyan}1.  Anolis     ${plain}- 版本: 7, 8, 23"
+    echo -e "${cyan}2.  Rocky      ${plain}- 版本: 8, 9, 10"
+    echo -e "${cyan}3.  Oracle     ${plain}- 版本: 8, 9"
+    echo -e "${cyan}4.  AlmaLinux  ${plain}- 版本: 8, 9, 10"
+    echo -e "${cyan}5.  OpenCloudOS${plain}- 版本: 8, 9, 23"
+    echo -e "${cyan}6.  CentOS     ${plain}- 版本: 9, 10"
+    echo -e "${cyan}7.  Fedora     ${plain}- 版本: 41, 42"
+    echo -e "${cyan}8.  NixOS      ${plain}- 版本: 25.05"
+    echo -e "${cyan}9.  Debian     ${plain}- 版本: 9, 10, 11, 12"
+    echo -e "${cyan}10. OpenSUSE   ${plain}- 版本: 15.6, tumbleweed"
+    echo -e "${cyan}11. Alpine     ${plain}- 版本: 3.19, 3.20, 3.21, 3.22"
+    echo -e "${cyan}12. OpenEuler  ${plain}- 版本: 20.03, 22.03, 24.03, 25.03"
+    echo -e "${cyan}13. Ubuntu     ${plain}- 版本: 16.04, 18.04, 20.04, 22.04, 24.04, 25.04 [--minimal]"
+    echo -e "${cyan}14. Kali       ${plain}- 最新版本"
+    echo -e "${cyan}15. Arch       ${plain}- 最新版本"
+    echo -e "${cyan}16. Gentoo     ${plain}- 最新版本"
+    echo -e "${cyan}17. AOSC       ${plain}- 最新版本"
+    echo -e "${cyan}18. FNOS       ${plain}- 最新版本"
+    echo -e "${cyan}19. RedHat     ${plain}- 需要提供镜像URL"
+}
+
+# 获取系统选择
+get_system_choice() {
+    while true; do
+        show_supported_systems
+        echo -e "\n${yellow}请选择要安装的系统：${plain}"
+        read -rp "输入系统编号 [1-19]: " sys_choice
+        
+        case $sys_choice in
+            1) SYSTEM_NAME="anolis"; get_version_choice "7|8|23"; break ;;
+            2) SYSTEM_NAME="rocky"; get_version_choice "8|9|10"; break ;;
+            3) SYSTEM_NAME="oracle"; get_version_choice "8|9"; break ;;
+            4) SYSTEM_NAME="almalinux"; get_version_choice "8|9|10"; break ;;
+            5) SYSTEM_NAME="opencloudos"; get_version_choice "8|9|23"; break ;;
+            6) SYSTEM_NAME="centos"; get_version_choice "9|10"; break ;;
+            7) SYSTEM_NAME="fedora"; get_version_choice "41|42"; break ;;
+            8) SYSTEM_NAME="nixos"; SYSTEM_VERSION="25.05"; break ;;
+            9) SYSTEM_NAME="debian"; get_version_choice "9|10|11|12"; break ;;
+            10) SYSTEM_NAME="opensuse"; get_version_choice "15.6|tumbleweed"; break ;;
+            11) SYSTEM_NAME="alpine"; get_version_choice "3.19|3.20|3.21|3.22"; break ;;
+            12) SYSTEM_NAME="openeuler"; get_version_choice "20.03|22.03|24.03|25.03"; break ;;
+            13) SYSTEM_NAME="ubuntu"; get_ubuntu_version; break ;;
+            14) SYSTEM_NAME="kali"; SYSTEM_VERSION=""; break ;;
+            15) SYSTEM_NAME="arch"; SYSTEM_VERSION=""; break ;;
+            16) SYSTEM_NAME="gentoo"; SYSTEM_VERSION=""; break ;;
+            17) SYSTEM_NAME="aosc"; SYSTEM_VERSION=""; break ;;
+            18) SYSTEM_NAME="fnos"; SYSTEM_VERSION=""; break ;;
+            19) SYSTEM_NAME="redhat"; get_redhat_image; break ;;
+            *)
+                echo -e "${red}无效选择，请输入 1-19${plain}"
+                ;;
+        esac
+    done
+}
+
+# 获取版本选择
+get_version_choice() {
+    local available_versions="$1"
+    echo -e "\n${yellow}可用版本: ${cyan}$available_versions${plain}"
+    while true; do
+        read -rp "请输入版本号: " version_input
+        if [[ "$available_versions" =~ $version_input ]]; then
+            SYSTEM_VERSION="$version_input"
+            break
+        else
+            echo -e "${red}无效版本，请从以下版本中选择: $available_versions${plain}"
+        fi
+    done
+}
+
+# 获取Ubuntu版本（支持--minimal选项）
+get_ubuntu_version() {
+    echo -e "\n${yellow}Ubuntu 可用版本: ${cyan}16.04, 18.04, 20.04, 22.04, 24.04, 25.04${plain}"
+    while true; do
+        read -rp "请输入Ubuntu版本号: " version_input
+        if [[ "$version_input" =~ ^(16\.04|18\.04|20\.04|22\.04|24\.04|25\.04)$ ]]; then
+            SYSTEM_VERSION="$version_input"
+            
+            echo -e "\n${yellow}是否安装最小化版本？${plain}"
+            read -rp "安装最小化版本 (y/n): " minimal_choice
+            if [[ "$minimal_choice" == [Yy] ]]; then
+                UBUNTU_MINIMAL="--minimal"
+            else
+                UBUNTU_MINIMAL=""
+            fi
+            break
+        else
+            echo -e "${red}无效版本，请输入: 16.04, 18.04, 20.04, 22.04, 24.04, 25.04${plain}"
+        fi
+    done
+}
+
+# 获取RedHat镜像URL
+get_redhat_image() {
+    echo -e "\n${yellow}RedHat 系统需要提供镜像URL${plain}"
+    echo -e "${cyan}示例: http://access.cdn.redhat.com/xxx.qcow2${plain}"
+    while true; do
+        read -rp "请输入RedHat镜像URL: " image_url
+        if [[ -n "$image_url" && "$image_url" =~ ^https?:// ]]; then
+            REDHAT_IMAGE="--img=\"$image_url\""
+            SYSTEM_VERSION=""
+            break
+        else
+            echo -e "${red}请输入有效的HTTP/HTTPS URL${plain}"
+        fi
+    done
+}
+
+# 设置root密码
+set_root_password() {
+    echo -e "\n${yellow}=== 设置root密码 ===${plain}"
+    while true; do
+        read -rsp "请输入root密码: " password1
+        echo
+        read -rsp "请再次确认密码: " password2
+        echo
+        
+        if [[ "$password1" == "$password2" ]]; then
+            if [[ ${#password1} -lt 6 ]]; then
+                echo -e "${red}密码长度至少需要6位，请重新输入${plain}"
+                continue
+            fi
+            ROOT_PASSWORD="$password1"
+            echo -e "${green}密码设置成功${plain}"
+            break
+        else
+            echo -e "${red}两次输入的密码不一致，请重新输入${plain}"
+        fi
+    done
+}
+
+# 设置SSH密钥
+set_ssh_key() {
+    echo -e "\n${yellow}=== SSH密钥设置 ===${plain}"
+    echo -e "${cyan}支持的密钥格式：${plain}"
+    echo -e "  - ssh-rsa ..."
+    echo -e "  - ssh-ed25519 ..."
+    echo -e "  - ecdsa-sha2-nistp256/384/521 ..."
+    echo -e "  - http://path/to/public_key"
+    echo -e "  - github:your_username"
+    echo -e "  - gitlab:your_username"
+    echo -e "  - /path/to/public_key"
+    echo -e "  - C:\\path\\to\\public_key"
+    
+    read -rp "是否设置SSH密钥登录？(y/n): " use_ssh_key
+    
+    if [[ "$use_ssh_key" == [Yy] ]]; then
+        echo -e "\n${yellow}请输入SSH公钥或路径：${plain}"
+        read -rp "SSH密钥: " ssh_key_input
+        
+        if [[ -n "$ssh_key_input" ]]; then
+            SSH_KEY="--ssh-key \"$ssh_key_input\""
+            echo -e "${green}SSH密钥设置成功${plain}"
+            echo -e "${yellow}注意: 使用SSH密钥时，root密码将为空${plain}"
+        else
+            echo -e "${red}SSH密钥不能为空${plain}"
+            SSH_KEY=""
+        fi
+    else
+        SSH_KEY=""
+        echo -e "${yellow}跳过SSH密钥设置${plain}"
+    fi
+}
+
+# 设置SSH端口
+set_ssh_port() {
+    echo -e "\n${yellow}=== SSH端口设置 ===${plain}"
+    read -rp "是否修改SSH端口？(y/n): " change_port
+    
+    if [[ "$change_port" == [Yy] ]]; then
+        while true; do
+            read -rp "请输入SSH端口 (1-65535): " port_input
+            if [[ "$port_input" =~ ^[0-9]+$ ]] && [ "$port_input" -ge 1 ] && [ "$port_input" -le 65535 ]; then
+                SSH_PORT="--ssh-port $port_input"
+                echo -e "${green}SSH端口设置为: $port_input${plain}"
+                break
+            else
+                echo -e "${red}请输入有效的端口号 (1-65535)${plain}"
+            fi
+        done
+    else
+        SSH_PORT=""
+        echo -e "${yellow}使用默认SSH端口 22${plain}"
+    fi
+}
+
+# 下载reinstall脚本
+download_reinstall_script() {
+    echo -e "\n${green}正在下载reinstall脚本...${plain}"
+    
+    # 尝试curl，如果失败则尝试wget
+    if command -v curl >/dev/null 2>&1; then
+        if curl -O https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh; then
+            echo -e "${green}✓ 使用curl下载成功${plain}"
+            return 0
+        else
+            echo -e "${yellow}curl下载失败，尝试wget...${plain}"
+        fi
+    fi
+    
+    if command -v wget >/dev/null 2>&1; then
+        if wget -O reinstall.sh https://raw.githubusercontent.com/bin456789/reinstall/main/reinstall.sh; then
+            echo -e "${green}✓ 使用wget下载成功${plain}"
+            return 0
+        else
+            echo -e "${red}wget下载失败${plain}"
+            return 1
+        fi
+    fi
+    
+    echo -e "${red}错误：系统中未找到curl或wget命令${plain}"
+    return 1
+}
+
+# 构建并执行重装命令
+execute_reinstall() {
+    echo -e "\n${green}=== 构建重装命令 ===${plain}"
+    
+    # 基础命令
+    local cmd="bash reinstall.sh $SYSTEM_NAME"
+    
+    # 添加版本号（如果有）
+    if [[ -n "$SYSTEM_VERSION" ]]; then
+        cmd="$cmd $SYSTEM_VERSION"
+    fi
+    
+    # 添加Ubuntu最小化选项
+    if [[ -n "$UBUNTU_MINIMAL" ]]; then
+        cmd="$cmd $UBUNTU_MINIMAL"
+    fi
+    
+    # 添加RedHat镜像选项
+    if [[ -n "$REDHAT_IMAGE" ]]; then
+        cmd="$cmd $REDHAT_IMAGE"
+    fi
+    
+    # 添加密码选项
+    if [[ -n "$ROOT_PASSWORD" ]]; then
+        cmd="$cmd --password \"$ROOT_PASSWORD\""
+    fi
+    
+    # 添加SSH密钥选项
+    if [[ -n "$SSH_KEY" ]]; then
+        cmd="$cmd $SSH_KEY"
+    fi
+    
+    # 添加SSH端口选项
+    if [[ -n "$SSH_PORT" ]]; then
+        cmd="$cmd $SSH_PORT"
+    fi
+    
+    echo -e "${yellow}将要执行的命令：${plain}"
+    echo -e "${cyan}$cmd${plain}"
+    
+    echo -e "\n${red}警告：此操作将完全重装系统，所有数据将被清除！${plain}"
+    echo -e "${red}请确保您已备份重要数据！${plain}"
+    echo -e "\n${yellow}系统: $SYSTEM_NAME${plain}"
+    if [[ -n "$SYSTEM_VERSION" ]]; then
+        echo -e "${yellow}版本: $SYSTEM_VERSION${plain}"
+    fi
+    if [[ -n "$SSH_KEY" ]]; then
+        echo -e "${yellow}SSH密钥: 已设置${plain}"
+    fi
+    if [[ -n "$SSH_PORT" ]]; then
+        echo -e "${yellow}SSH端口: 已设置${plain}"
+    fi
+    
+    echo -e "\n${yellow}安装过程可能需要一段时间，请耐心等待...${plain}"
+    echo -e "${yellow}安装期间请观察日志输出${plain}"
+    
+    read -rp "确认执行系统重装？(请输入 'YES' 确认): " final_confirm
+    
+    if [[ "$final_confirm" == "YES" ]]; then
+        echo -e "\n${green}开始执行系统重装...${plain}"
+        echo -e "${yellow}================================${plain}"
+        
+        # 执行重装命令
+        eval $cmd
+        
+        echo -e "\n${yellow}================================${plain}"
+        echo -e "${green}重装命令执行完成${plain}"
+        echo -e "${yellow}请观察上方输出信息${plain}"
+        
+        # 清理脚本文件
+        if [[ -f "reinstall.sh" ]]; then
+            rm -f reinstall.sh
+            echo -e "${green}已清理临时脚本文件${plain}"
+        fi
+    else
+        echo -e "${red}重装已取消${plain}"
+        # 清理脚本文件
+        if [[ -f "reinstall.sh" ]]; then
+            rm -f reinstall.sh
+        fi
+        return 1
+    fi
+}
+
+# DD系统重装主函数
+dd_system_reinstall() {
+    echo -e "${green}=== DD系统重装功能 ===${plain}"
+    echo -e "${yellow}此功能使用reinstall脚本重装系统${plain}"
+    echo -e "${red}注意：此操作会完全清除当前系统，请谨慎使用！${plain}"
+    
+    read -rp "确认继续？(y/n): " continue_choice
+    if [[ "$continue_choice" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 初始化变量
+    SYSTEM_NAME=""
+    SYSTEM_VERSION=""
+    ROOT_PASSWORD=""
+    SSH_KEY=""
+    SSH_PORT=""
+    UBUNTU_MINIMAL=""
+    REDHAT_IMAGE=""
+    
+    # 步骤1: 选择系统
+    echo -e "\n${green}步骤1: 选择要安装的系统${plain}"
+    get_system_choice
+    
+    # 步骤2: 设置root密码
+    echo -e "\n${green}步骤2: 设置root密码${plain}"
+    set_root_password
+    
+    # 步骤3: 设置SSH密钥（可选）
+    echo -e "\n${green}步骤3: 设置SSH密钥（可选）${plain}"
+    set_ssh_key
+    
+    # 步骤4: 设置SSH端口（可选）
+    echo -e "\n${green}步骤4: 设置SSH端口（可选）${plain}"
+    set_ssh_port
+    
+    # 步骤5: 下载脚本
+    echo -e "\n${green}步骤5: 下载reinstall脚本${plain}"
+    if ! download_reinstall_script; then
+        echo -e "${red}下载脚本失败，无法继续${plain}"
+        return 1
+    fi
+    
+    # 步骤6: 执行重装
+    echo -e "\n${green}步骤6: 执行系统重装${plain}"
+    execute_reinstall
+}
+
+############################################################
+# 选项 13: 修改主机名与登录信息
+############################################################
+
+# 生成ASCII艺术字
+generate_ascii_art() {
+    cat << 'EOF'
+  █████╗ ██╗██████╗ ███████╗██╗   ██╗███████╗███████╗
+ ██╔══██╗██║██╔══██╗██╔════╝██║   ██║██╔════╝██╔════╝
+ ███████║██║██████╔╝███████╗██║   ██║█████╗  █████╗  
+ ██╔══██║██║██╔══██╗╚════██║██║   ██║██╔══╝  ██╔══╝  
+ ██║  ██║██║██║  ██║███████║╚██████╔╝██║     ███████╗
+ ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝     ╚══════╝
+                                                     
+        ╔════════════════════════════════════╗
+        ║          苏菲家宽 - 优质网络         ║
+        ║       AirSufe Network Service      ║
+        ╚════════════════════════════════════╝
+EOF
+}
+
+# 获取当前主机名信息
+get_current_hostname_info() {
+    echo -e "${green}=== 当前主机信息 ===${plain}"
+    echo -e "${yellow}当前主机名: ${cyan}$(hostname)${plain}"
+    echo -e "${yellow}完整主机名: ${cyan}$(hostname -f 2>/dev/null || hostname)${plain}"
+    
+    if [[ -f /etc/hostname ]]; then
+        echo -e "${yellow}/etc/hostname: ${cyan}$(cat /etc/hostname)${plain}"
+    fi
+    
+    echo -e "${yellow}/etc/hosts 内容:${plain}"
+    if [[ -f /etc/hosts ]]; then
+        echo -e "${cyan}$(cat /etc/hosts)${plain}"
+    else
+        echo -e "${red}/etc/hosts 文件不存在${plain}"
+    fi
+    
+    echo -e "\n${yellow}当前登录信息 (/etc/motd):${plain}"
+    if [[ -f /etc/motd ]]; then
+        if [[ -s /etc/motd ]]; then
+            echo -e "${cyan}$(cat /etc/motd)${plain}"
+        else
+            echo -e "${yellow}MOTD 文件为空${plain}"
+        fi
+    else
+        echo -e "${yellow}MOTD 文件不存在${plain}"
+    fi
+}
+
+# 验证主机名格式
+validate_hostname() {
+    local hostname="$1"
+    
+    # 检查长度
+    if [[ ${#hostname} -gt 63 ]]; then
+        echo -e "${red}错误：主机名长度不能超过63个字符${plain}"
+        return 1
+    fi
+    
+    # 检查格式
+    if [[ ! "$hostname" =~ ^[a-zA-Z0-9]([a-zA-Z0-9\-]*[a-zA-Z0-9])?$ ]]; then
+        echo -e "${red}错误：主机名格式不正确${plain}"
+        echo -e "${yellow}主机名规则：${plain}"
+        echo -e "  - 只能包含字母、数字和连字符(-)"
+        echo -e "  - 必须以字母或数字开头和结尾"
+        echo -e "  - 不能连续出现连字符"
+        return 1
+    fi
+    
+    return 0
+}
+
+# 设置新主机名
+set_new_hostname() {
+    local new_hostname="$1"
+    
+    echo -e "\n${green}正在设置新主机名: ${cyan}$new_hostname${plain}"
+    
+    # 备份原有配置
+    if [[ -f /etc/hostname ]]; then
+        cp /etc/hostname /etc/hostname.backup.$(date +%Y%m%d_%H%M%S)
+        echo -e "${green}已备份原 /etc/hostname${plain}"
+    fi
+    
+    if [[ -f /etc/hosts ]]; then
+        cp /etc/hosts /etc/hosts.backup.$(date +%Y%m%d_%H%M%S)
+        echo -e "${green}已备份原 /etc/hosts${plain}"
+    fi
+    
+    # 设置新主机名
+    echo "$new_hostname" > /etc/hostname
+    
+    # 立即应用主机名
+    if command -v hostnamectl >/dev/null 2>&1; then
+        hostnamectl set-hostname "$new_hostname"
+        echo -e "${green}✓ 使用 hostnamectl 设置主机名${plain}"
+    else
+        hostname "$new_hostname"
+        echo -e "${green}✓ 使用 hostname 命令设置主机名${plain}"
+    fi
+    
+    # 更新 /etc/hosts
+    update_hosts_file "$new_hostname"
+    
+    echo -e "${green}✓ 主机名设置完成${plain}"
+}
+
+# 更新 /etc/hosts 文件
+update_hosts_file() {
+    local new_hostname="$1"
+    
+    echo -e "\n${green}正在更新 /etc/hosts 文件...${plain}"
+    
+    # 创建新的 hosts 文件内容
+    local temp_hosts="/tmp/hosts.new"
+    
+    # 保留原有的非 127.0.0.1 和 ::1 条目，但移除旧主机名
+    if [[ -f /etc/hosts ]]; then
+        grep -v "^127\.0\.0\.1.*$(hostname)$" /etc/hosts | \
+        grep -v "^::1.*$(hostname)$" > "$temp_hosts"
+    fi
+    
+    # 确保包含基本的 localhost 条目
+    if ! grep -q "^127\.0\.0\.1.*localhost" "$temp_hosts" 2>/dev/null; then
+        echo "127.0.0.1    localhost" > "$temp_hosts.tmp"
+        if [[ -f "$temp_hosts" ]]; then
+            cat "$temp_hosts" >> "$temp_hosts.tmp"
+        fi
+        mv "$temp_hosts.tmp" "$temp_hosts"
+    fi
+    
+    # 添加新主机名条目
+    {
+        echo "127.0.0.1    $new_hostname"
+        echo "::1          $new_hostname"
+    } >> "$temp_hosts"
+    
+    # 替换原文件
+    mv "$temp_hosts" /etc/hosts
+    
+    echo -e "${green}✓ /etc/hosts 文件更新完成${plain}"
+    echo -e "${yellow}新的 /etc/hosts 内容:${plain}"
+    echo -e "${cyan}$(cat /etc/hosts)${plain}"
+}
+
+# 设置登录横幅
+set_login_banner() {
+    echo -e "\n${green}正在设置登录横幅...${plain}"
+    
+    # 备份原 MOTD
+    if [[ -f /etc/motd ]]; then
+        cp /etc/motd /etc/motd.backup.$(date +%Y%m%d_%H%M%S)
+        echo -e "${green}已备份原 /etc/motd${plain}"
+    fi
+    
+    # 生成新的 MOTD
+    generate_ascii_art > /etc/motd
+    
+    # 添加系统信息
+    cat >> /etc/motd << EOF
+
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+  欢迎使用 AirSufe 网络服务
+  主机名: $(hostname)
+  系统: $(uname -o) $(uname -r)
+  当前时间: $(date '+%Y-%m-%d %H:%M:%S %Z')
+━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+EOF
+    
+    echo -e "${green}✓ 登录横幅设置完成${plain}"
+    echo -e "\n${yellow}新的登录横幅预览:${plain}"
+    echo -e "${cyan}$(cat /etc/motd)${plain}"
+}
+
+# 主机名和登录信息修改主函数
+modify_hostname_and_motd() {
+    echo -e "${green}=== 修改主机名与登录信息 ===${plain}"
+    echo -e "${yellow}此功能将帮助您修改服务器主机名并设置个性化登录信息${plain}"
+    
+    # 显示当前信息
+    get_current_hostname_info
+    
+    echo -e "\n${yellow}是否继续修改主机名和登录信息？${plain}"
+    read -rp "继续 (y/n): " continue_choice
+    if [[ "$continue_choice" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 获取新主机名
+    while true; do
+        echo -e "\n${green}请输入新的主机名：${plain}"
+        echo -e "${yellow}建议格式: 字母数字组合，如 vps-hk1, server-01, airsufe-node 等${plain}"
+        read -rp "新主机名: " new_hostname
+        
+        if [[ -z "$new_hostname" ]]; then
+            echo -e "${red}主机名不能为空${plain}"
+            continue
+        fi
+        
+        if validate_hostname "$new_hostname"; then
+            break
+        fi
+    done
+    
+    echo -e "\n${yellow}=== 确认修改信息 ===${plain}"
+    echo -e "${yellow}当前主机名: ${cyan}$(hostname)${plain}"
+    echo -e "${yellow}新主机名: ${cyan}$new_hostname${plain}"
+    echo -e "${yellow}登录横幅: ${cyan}AirSufe 苏菲家宽 ASCII 艺术字${plain}"
+    
+    read -rp "确认执行修改？(y/n): " confirm_change
+    if [[ "$confirm_change" != [Yy] ]]; then
+        echo -e "${yellow}修改已取消${plain}"
+        return 0
+    fi
+    
+    # 执行修改
+    echo -e "\n${green}开始执行修改...${plain}"
+    
+    # 1. 设置主机名
+    set_new_hostname "$new_hostname"
+    
+    # 2. 设置登录横幅
+    set_login_banner
+    
+    echo -e "\n${green}✅ 主机名和登录信息修改完成！${plain}"
+    echo -e "${yellow}修改内容：${plain}"
+    echo -e "  ✓ 主机名已更改为: ${cyan}$new_hostname${plain}"
+    echo -e "  ✓ 更新了 /etc/hostname"
+    echo -e "  ✓ 更新了 /etc/hosts"
+    echo -e "  ✓ 设置了 AirSufe 登录横幅"
+    
+    echo -e "\n${yellow}注意事项：${plain}"
+    echo -e "  - 主机名修改立即生效"
+    echo -e "  - 登录横幅在下次 SSH 登录时显示"
+    echo -e "  - 原配置文件已自动备份"
+    echo -e "  - 如需恢复，可使用备份文件"
+    
+    echo -e "\n${cyan}测试新设置：${plain}"
+    echo -e "  当前主机名: ${green}$(hostname)${plain}"
+    
+    read -rp "是否立即测试显示登录横幅？(y/n): " show_banner
+    if [[ "$show_banner" == [Yy] ]]; then
+        echo -e "\n${green}=== 登录横幅预览 ===${plain}"
+        cat /etc/motd
+    fi
+}
+
+############################################################
 # 主菜单和脚本执行逻辑
 ############################################################
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.7)${plain}
+  ${green}多功能服务器工具脚本 (v3.9)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
   ${yellow}2.${plain} 安装 / 更新 V2bX
   ${yellow}3.${plain} 为 Hysteria2 节点设置出站规则
   ${yellow}4.${plain} 为 vless/shadowsocks 节点配置出站规则
-  ${yellow}5.${plain} 移除银行和支付站点拦截规则
+  ${yellow}5.${plain} 支付站点拦截管理 / shadowsocks节点安全
   ${yellow}6.${plain} 安装哪吒探针
   ${yellow}7.${plain} 安装1Panel管理面板
   ${yellow}8.${plain} 执行网络测速
   ${yellow}9.${plain} 设置isufe快捷命令
   ${yellow}10.${plain} 一键式OpenVPN策略路由设置 (含故障恢复)
   ${yellow}11.${plain} 安装3x-ui面板
-  ${yellow}12.${plain} 更新脚本到最新版本
+  ${yellow}12.${plain} DD系统重装 (使用reinstall脚本)
+  ${yellow}13.${plain} 修改主机名与登录信息
+  ${yellow}14.${plain} 更新脚本到最新版本
   ---"
-    read -rp "请输入选项 [0-12]: " choice
+    read -rp "请输入选项 [0-14]: " choice
     
     case $choice in
         0)
@@ -2722,11 +3531,12 @@ show_menu() {
             setup_vless_ss_outbound
             ;;
         5)
-            # 提供子选项：查看状态或移除拦截
-            echo -e "\n${yellow}支付站点拦截管理：${plain}"
+            # 提供子选项：查看状态、移除拦截或为SS节点添加中国大陆禁止规则
+            echo -e "\n${yellow}支付站点拦截管理与shadowsocks节点安全：${plain}"
             echo -e "  ${cyan}1.${plain} 查看当前拦截状态"
             echo -e "  ${cyan}2.${plain} 移除银行和支付站点拦截规则"
-            read -rp "请选择操作 [1-2]: " payment_choice
+            echo -e "  ${cyan}3.${plain} 检查shadowsocks节点并添加中国大陆禁止规则"
+            read -rp "请选择操作 [1-3]: " payment_choice
             
             case $payment_choice in
                 1)
@@ -2734,6 +3544,9 @@ show_menu() {
                     ;;
                 2)
                     remove_payment_blocks
+                    ;;
+                3)
+                    check_and_block_ss_china
                     ;;
                 *)
                     echo -e "${red}无效的选择${plain}"
@@ -2759,10 +3572,16 @@ show_menu() {
             install_3xui
             ;;
         12)
+            dd_system_reinstall
+            ;;
+        13)
+            modify_hostname_and_motd
+            ;;
+        14)
             update_script
             ;;
         *)
-            echo -e "${red}无效的选项，请输入 0-12${plain}"
+            echo -e "${red}无效的选项，请输入 0-14${plain}"
             ;;
     esac
 }
