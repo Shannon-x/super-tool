@@ -3262,10 +3262,12 @@ generate_ascii_art() {
     echo -e "${CYAN} ██║  ██║██║██║  ██║███████║╚██████╔╝██║     ███████╗${NC}"
     echo -e "${CYAN} ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝     ╚══════╝${NC}"
     echo -e "${WHITE}                                                     ${NC}"
-    echo -e "${YELLOW}        ╔════════════════════════════════════╗${NC}"
-    echo -e "${YELLOW}        ║   ${RED}苏菲家宽${YELLOW} - ${GREEN}优质网络${YELLOW}         ║${NC}"
-    echo -e "${YELLOW}        ║   ${BLUE}AirSufe${WHITE} Network Service      ${YELLOW}║${NC}"
-    echo -e "${YELLOW}        ╚════════════════════════════════════╝${NC}"
+    echo -e "${YELLOW}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
+    echo -e "${YELLOW}┃   ${RED}苏菲家宽${YELLOW} - ${GREEN}极度纯净家宽网络${YELLOW}           ┃${NC}"
+    echo -e "${YELLOW}┃   ${BLUE}AirSufe${WHITE} Network Service${YELLOW}                  ┃${NC}"
+    echo -e "${YELLOW}┃   ${MAGENTA}家宽主机：${CYAN}airsufe.com${YELLOW}                  ┃${NC}"
+    echo -e "${YELLOW}┃   ${MAGENTA}家宽代理：${CYAN}sufe.pro${YELLOW}                     ┃${NC}"
+    echo -e "${YELLOW}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
 }
 
 # 获取当前主机名信息
@@ -3406,13 +3408,12 @@ set_login_banner() {
     # 生成新的 MOTD
     generate_ascii_art > /etc/motd
     
-    # 添加系统信息
+    # 添加系统信息（去除uname -o等内核行）
     cat >> /etc/motd << EOF
 
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
   欢迎使用 AirSufe 网络服务
   主机名: $(hostname)
-  系统: $(uname -o) $(uname -r)
   当前时间: $(date '+%Y-%m-%d %H:%M:%S %Z')
 ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
