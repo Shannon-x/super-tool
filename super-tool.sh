@@ -3625,7 +3625,7 @@ modify_hostname_and_motd() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v4.1)${plain}
+  ${green}多功能服务器工具脚本 (v4.2)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
       ${yellow}1.${plain} 端口转发管理 (设置/查看规则)
@@ -3642,8 +3642,9 @@ show_menu() {
   ${yellow}12.${plain} DD系统重装 (使用reinstall脚本)
   ${yellow}13.${plain} 修改主机名与登录信息
   ${yellow}14.${plain} 更新脚本到最新版本
+  ${yellow}15.${plain} 服务器安全设置 (SSH/Fail2ban/更新)
   ---"
-    read -rp "请输入选项 [0-14]: " choice
+    read -rp "请输入选项 [0-15]: " choice
     
     case $choice in
         0)
@@ -3711,8 +3712,11 @@ show_menu() {
         14)
             update_script
             ;;
+        15)
+            server_security_menu
+            ;;
         *)
-            echo -e "${red}无效的选项，请输入 0-14${plain}"
+            echo -e "${red}无效的选项，请输入 0-15${plain}"
             ;;
     esac
 }
@@ -3897,6 +3901,613 @@ show_manual_setup() {
     echo -e "\n${cyan}方法3 - 复制文件:${plain}"
     echo -e "  sudo cp $script_path $target_path"
     echo -e "  sudo chmod +x $target_path"
+}
+
+############################################################
+# 服务器安全设置功能
+############################################################
+
+# 1. 添加SSH密钥登录
+setup_ssh_key_login() {
+    echo -e "${green}=== 设置SSH密钥登录 ===${plain}"
+    
+    local public_key="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDr/1TncOySPMDS4gfQXcknFmqRspdKESWtFxYBRzHUFxt2i/7qoPY+FG3YqWnm3wawtUvMKHRtflvCEGhO1fZl5ZqLBxSILfWX9IDlPcaL7K9DN7ZVtLqOcQb6ADzp2Q8ZW4n+b6qOjlBsxZr34sYcz5hzdsEz+0Zr3YbRvQlFYjaivQdi4nYigMcFru2TKqOz/Wxuhg1i4HFTKthzuDSNzLjL0zu6pSlglB2oLVJJrUt8ARswrqEoylk5+7aLPIEoz2sLm7liA9e7N7ITnZZNVYt9ZZ6jeeVpTVnR2qZV6SnqL3/iGIWtY50u7l+dbF/jN0b7XSuKGNN7dLGck0GAbVa4yp/dC5Bk7zqVALDaQRLkNjJ/r+kKBkZM9f6iHMYnSNBvNou5lAh4ZhP1scXuN6OhWHqrUxyG0esq8CEIEmPUEyMwnaA69FMqnrBT8RQR0I3enFxMOY2E9zc/2BJsZo6CMD2nPqXMffNZ9I4zBHesdYf9vy8uyl7wBQC87wlNzm1dX3s1TXYm4LXrFHeTHyddG2q+fmOq4y6tS0tDmGp7Q2Dccic6LV1IDM9lgUdlxAm90+C9A8Ew8MzrSjLdSzTouORhNr6tTGF7lubg1BtjtElcVXF3Jf4KX52I/wkXo3iszGUF4rmZpxHinWJTLCwvvX26YkrHGWWb3473gw== shuhao1024@gmail.com"
+    local ssh_dir="$HOME/.ssh"
+    local authorized_keys="$ssh_dir/authorized_keys"
+    
+    echo -e "${yellow}将要添加的公钥：${plain}"
+    echo -e "${cyan}$public_key${plain}"
+    
+    read -rp "确认添加此SSH公钥？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 创建.ssh目录
+    if [[ ! -d "$ssh_dir" ]]; then
+        echo -e "${yellow}创建 $ssh_dir 目录...${plain}"
+        mkdir -p "$ssh_dir"
+        chmod 700 "$ssh_dir"
+    fi
+    
+    # 备份现有的authorized_keys文件
+    if [[ -f "$authorized_keys" ]]; then
+        local backup_file="${authorized_keys}.backup.$(date +%Y%m%d_%H%M%S)"
+        echo -e "${yellow}备份现有授权密钥文件到：${plain}${cyan}$backup_file${plain}"
+        cp "$authorized_keys" "$backup_file"
+    fi
+    
+    # 检查密钥是否已存在
+    if [[ -f "$authorized_keys" ]] && grep -q "shuhao1024@gmail.com" "$authorized_keys"; then
+        echo -e "${yellow}检测到该密钥已存在，将更新...${plain}"
+        grep -v "shuhao1024@gmail.com" "$authorized_keys" > "${authorized_keys}.tmp" || true
+        mv "${authorized_keys}.tmp" "$authorized_keys"
+    fi
+    
+    # 添加新密钥
+    echo "$public_key" >> "$authorized_keys"
+    chmod 600 "$authorized_keys"
+    
+    echo -e "${green}✓ SSH公钥已成功添加！${plain}"
+    echo -e "${yellow}授权密钥文件：${plain}${cyan}$authorized_keys${plain}"
+    echo -e "${yellow}文件权限：${plain}${cyan}$(ls -la $authorized_keys)${plain}"
+    
+    # 验证SSH服务状态
+    echo -e "\n${yellow}检查SSH服务状态...${plain}"
+    if systemctl is-active --quiet ssh || systemctl is-active --quiet sshd; then
+        echo -e "${green}✓ SSH服务正在运行${plain}"
+    else
+        echo -e "${red}⚠ SSH服务未运行，正在尝试启动...${plain}"
+        if systemctl start ssh 2>/dev/null || systemctl start sshd 2>/dev/null; then
+            echo -e "${green}✓ SSH服务已启动${plain}"
+        else
+            echo -e "${red}✗ 无法启动SSH服务，请手动检查${plain}"
+        fi
+    fi
+    
+    echo -e "\n${cyan}提示：${plain}"
+    echo -e "  - 现在可以使用密钥登录服务器"
+    echo -e "  - 建议测试密钥登录成功后再禁用密码登录"
+    echo -e "  - 请确保保存好对应的私钥文件"
+}
+
+# 2. 禁止密码登录
+disable_password_login() {
+    echo -e "${green}=== 禁止SSH密码登录 ===${plain}"
+    
+    local sshd_config="/etc/ssh/sshd_config"
+    
+    if [[ ! -f "$sshd_config" ]]; then
+        echo -e "${red}错误：未找到SSH配置文件 $sshd_config${plain}"
+        return 1
+    fi
+    
+    echo -e "${red}⚠ 警告：禁用密码登录后，只能通过SSH密钥登录！${plain}"
+    echo -e "${yellow}请确保：${plain}"
+    echo -e "  1. 已正确添加SSH公钥"
+    echo -e "  2. 已测试密钥登录成功"
+    echo -e "  3. 有其他方式访问服务器（如控制台）"
+    
+    read -rp "确认禁用密码登录？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 备份SSH配置文件
+    local backup_file="${sshd_config}.backup.$(date +%Y%m%d_%H%M%S)"
+    echo -e "${yellow}备份SSH配置文件到：${plain}${cyan}$backup_file${plain}"
+    cp "$sshd_config" "$backup_file"
+    
+    # 修改SSH配置
+    echo -e "${yellow}修改SSH配置...${plain}"
+    
+    # 禁用密码认证
+    if grep -q "^PasswordAuthentication" "$sshd_config"; then
+        sed -i 's/^PasswordAuthentication.*/PasswordAuthentication no/' "$sshd_config"
+    else
+        echo "PasswordAuthentication no" >> "$sshd_config"
+    fi
+    
+    # 禁用质询响应认证
+    if grep -q "^ChallengeResponseAuthentication" "$sshd_config"; then
+        sed -i 's/^ChallengeResponseAuthentication.*/ChallengeResponseAuthentication no/' "$sshd_config"
+    else
+        echo "ChallengeResponseAuthentication no" >> "$sshd_config"
+    fi
+    
+    # 启用公钥认证（确保）
+    if grep -q "^PubkeyAuthentication" "$sshd_config"; then
+        sed -i 's/^PubkeyAuthentication.*/PubkeyAuthentication yes/' "$sshd_config"
+    else
+        echo "PubkeyAuthentication yes" >> "$sshd_config"
+    fi
+    
+    # 禁用PAM认证
+    if grep -q "^UsePAM" "$sshd_config"; then
+        sed -i 's/^UsePAM.*/UsePAM no/' "$sshd_config"
+    else
+        echo "UsePAM no" >> "$sshd_config"
+    fi
+    
+    # 验证配置
+    echo -e "${yellow}验证SSH配置...${plain}"
+    if sshd -t; then
+        echo -e "${green}✓ SSH配置验证通过${plain}"
+        
+        # 重启SSH服务
+        echo -e "${yellow}重启SSH服务...${plain}"
+        if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
+            echo -e "${green}✓ SSH服务已重启${plain}"
+            echo -e "${green}✓ 密码登录已禁用！${plain}"
+            echo -e "${cyan}当前SSH配置：${plain}"
+            echo -e "  - 密码认证：${red}禁用${plain}"
+            echo -e "  - 公钥认证：${green}启用${plain}"
+            echo -e "  - 质询响应认证：${red}禁用${plain}"
+        else
+            echo -e "${red}✗ SSH服务重启失败${plain}"
+            echo -e "${yellow}恢复配置文件...${plain}"
+            cp "$backup_file" "$sshd_config"
+            systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+            return 1
+        fi
+    else
+        echo -e "${red}✗ SSH配置验证失败，恢复备份${plain}"
+        cp "$backup_file" "$sshd_config"
+        return 1
+    fi
+    
+    echo -e "\n${yellow}重要提示：${plain}"
+    echo -e "  - ${red}密码登录已被禁用${plain}"
+    echo -e "  - ${green}只能使用SSH密钥登录${plain}"
+    echo -e "  - 配置备份：${cyan}$backup_file${plain}"
+}
+
+# 3. 安装并配置Fail2ban
+setup_fail2ban() {
+    echo -e "${green}=== 安装并配置Fail2ban ===${plain}"
+    
+    # 检测操作系统
+    local os_release=""
+    if [[ -f /etc/os-release ]]; then
+        source /etc/os-release
+        os_release="$ID"
+    fi
+    
+    echo -e "${yellow}检测到操作系统：${plain}${cyan}$os_release${plain}"
+    
+    # 检查Fail2ban是否已安装
+    if command -v fail2ban-server >/dev/null 2>&1; then
+        echo -e "${green}Fail2ban 已安装${plain}"
+    else
+        echo -e "${yellow}正在安装 Fail2ban...${plain}"
+        
+        case "$os_release" in
+            "ubuntu"|"debian")
+                apt-get update -y
+                apt-get install -y fail2ban
+                ;;
+            "centos"|"rhel"|"fedora")
+                if command -v dnf >/dev/null 2>&1; then
+                    dnf install -y epel-release
+                    dnf install -y fail2ban
+                else
+                    yum install -y epel-release
+                    yum install -y fail2ban
+                fi
+                ;;
+            "arch")
+                pacman -S --noconfirm fail2ban
+                ;;
+            *)
+                echo -e "${red}不支持的操作系统，请手动安装 Fail2ban${plain}"
+                return 1
+                ;;
+        esac
+        
+        if command -v fail2ban-server >/dev/null 2>&1; then
+            echo -e "${green}✓ Fail2ban 安装成功${plain}"
+        else
+            echo -e "${red}✗ Fail2ban 安装失败${plain}"
+            return 1
+        fi
+    fi
+    
+    # 创建自定义配置
+    local jail_local="/etc/fail2ban/jail.local"
+    
+    echo -e "${yellow}配置 Fail2ban...${plain}"
+    
+    # 备份现有配置
+    if [[ -f "$jail_local" ]]; then
+        local backup_file="${jail_local}.backup.$(date +%Y%m%d_%H%M%S)"
+        echo -e "${yellow}备份现有配置到：${plain}${cyan}$backup_file${plain}"
+        cp "$jail_local" "$backup_file"
+    fi
+    
+    # 创建配置文件
+    cat > "$jail_local" << 'EOF'
+[DEFAULT]
+# 封禁时间：600小时 = 25天
+bantime = 2160000
+
+# 在findtime时间内
+findtime = 600
+
+# 失败maxretry次后封禁
+maxretry = 3
+
+# 忽略的IP（本地IP）
+ignoreip = 127.0.0.1/8 ::1
+
+# 后端
+backend = auto
+
+# 邮件配置（可选）
+# destemail = your-email@domain.com
+# sender = fail2ban@hostname
+# mta = sendmail
+
+# 动作
+action = %(action_)s
+
+[sshd]
+enabled = true
+port = ssh
+filter = sshd
+logpath = /var/log/auth.log
+maxretry = 3
+bantime = 2160000
+findtime = 600
+
+[sshd-ddos]
+enabled = true
+port = ssh
+filter = sshd-ddos
+logpath = /var/log/auth.log
+maxretry = 2
+bantime = 2160000
+findtime = 300
+
+[nginx-http-auth]
+enabled = false
+port = http,https
+filter = nginx-http-auth
+logpath = /var/log/nginx/error.log
+maxretry = 6
+
+[nginx-noscript]
+enabled = false
+port = http,https
+filter = nginx-noscript
+logpath = /var/log/nginx/access.log
+maxretry = 6
+
+[nginx-badbots]
+enabled = false
+port = http,https
+filter = nginx-badbots
+logpath = /var/log/nginx/access.log
+maxretry = 2
+
+[nginx-noproxy]
+enabled = false
+port = http,https
+filter = nginx-noproxy
+logpath = /var/log/nginx/access.log
+maxretry = 2
+EOF
+    
+    # 针对CentOS/RHEL系统调整日志路径
+    if [[ "$os_release" == "centos" || "$os_release" == "rhel" || "$os_release" == "fedora" ]]; then
+        sed -i 's|/var/log/auth.log|/var/log/secure|g' "$jail_local"
+    fi
+    
+    # 启动并启用Fail2ban服务
+    echo -e "${yellow}启动 Fail2ban 服务...${plain}"
+    systemctl enable fail2ban
+    systemctl start fail2ban
+    
+    if systemctl is-active --quiet fail2ban; then
+        echo -e "${green}✓ Fail2ban 服务已启动并启用${plain}"
+    else
+        echo -e "${red}✗ Fail2ban 服务启动失败${plain}"
+        return 1
+    fi
+    
+    # 显示状态
+    echo -e "\n${green}=== Fail2ban 配置完成 ===${plain}"
+    echo -e "${yellow}配置详情：${plain}"
+    echo -e "  - 封禁时间：${cyan}600小时（25天）${plain}"
+    echo -e "  - 检查窗口：${cyan}10分钟${plain}"
+    echo -e "  - 最大重试：${cyan}3次${plain}"
+    echo -e "  - SSH保护：${green}已启用${plain}"
+    echo -e "  - SSH DDoS保护：${green}已启用${plain}"
+    
+    echo -e "\n${cyan}常用管理命令：${plain}"
+    echo -e "  - 查看状态：${yellow}fail2ban-client status${plain}"
+    echo -e "  - 查看SSH监控：${yellow}fail2ban-client status sshd${plain}"
+    echo -e "  - 解封IP：${yellow}fail2ban-client set sshd unbanip <IP>${plain}"
+    echo -e "  - 查看日志：${yellow}tail -f /var/log/fail2ban.log${plain}"
+    
+    # 显示当前状态
+    echo -e "\n${yellow}当前 Fail2ban 状态：${plain}"
+    fail2ban-client status 2>/dev/null || echo -e "${red}无法获取状态信息${plain}"
+}
+
+# 4. 更新系统包
+update_system_packages() {
+    echo -e "${green}=== 更新系统包 ===${plain}"
+    
+    # 检测操作系统
+    local os_release=""
+    if [[ -f /etc/os-release ]]; then
+        source /etc/os-release
+        os_release="$ID"
+    fi
+    
+    echo -e "${yellow}检测到操作系统：${plain}${cyan}$os_release${plain}"
+    
+    read -rp "确认更新系统包？这可能需要一些时间 (y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    echo -e "${yellow}开始更新系统包...${plain}"
+    
+    case "$os_release" in
+        "ubuntu"|"debian")
+            echo -e "${cyan}更新包列表...${plain}"
+            apt-get update -y
+            echo -e "${cyan}升级系统包...${plain}"
+            apt-get upgrade -y
+            echo -e "${cyan}清理不需要的包...${plain}"
+            apt-get autoremove -y
+            apt-get autoclean
+            ;;
+        "centos"|"rhel"|"fedora")
+            if command -v dnf >/dev/null 2>&1; then
+                echo -e "${cyan}更新包列表和系统包...${plain}"
+                dnf update -y
+                echo -e "${cyan}清理包缓存...${plain}"
+                dnf autoremove -y
+                dnf clean all
+            else
+                echo -e "${cyan}更新包列表和系统包...${plain}"
+                yum update -y
+                echo -e "${cyan}清理包缓存...${plain}"
+                yum autoremove -y
+                yum clean all
+            fi
+            ;;
+        "arch")
+            echo -e "${cyan}更新包列表和系统包...${plain}"
+            pacman -Syu --noconfirm
+            echo -e "${cyan}清理包缓存...${plain}"
+            pacman -Sc --noconfirm
+            ;;
+        *)
+            echo -e "${red}不支持的操作系统${plain}"
+            return 1
+            ;;
+    esac
+    
+    echo -e "${green}✓ 系统包更新完成${plain}"
+    
+    # 检查是否需要重启
+    if [[ -f /var/run/reboot-required ]]; then
+        echo -e "${yellow}⚠ 系统更新完成，建议重启系统${plain}"
+        read -rp "是否现在重启系统？(y/n): " reboot_confirm
+        if [[ "$reboot_confirm" == [Yy] ]]; then
+            echo -e "${red}系统将在5秒后重启...${plain}"
+            sleep 5
+            reboot
+        fi
+    fi
+}
+
+# 5. 更改SSH登录端口
+change_ssh_port() {
+    echo -e "${green}=== 更改SSH登录端口 ===${plain}"
+    
+    local sshd_config="/etc/ssh/sshd_config"
+    
+    if [[ ! -f "$sshd_config" ]]; then
+        echo -e "${red}错误：未找到SSH配置文件 $sshd_config${plain}"
+        return 1
+    fi
+    
+    # 获取当前SSH端口
+    local current_port
+    current_port=$(grep "^Port " "$sshd_config" | awk '{print $2}' 2>/dev/null)
+    if [[ -z "$current_port" ]]; then
+        current_port="22"
+    fi
+    
+    echo -e "${yellow}当前SSH端口：${plain}${cyan}$current_port${plain}"
+    
+    read -rp "请输入新的SSH端口 (1024-65535): " new_port
+    
+    # 验证端口号
+    if ! [[ "$new_port" =~ ^[0-9]+$ ]] || [[ "$new_port" -lt 1024 ]] || [[ "$new_port" -gt 65535 ]]; then
+        echo -e "${red}错误：端口号必须是1024-65535之间的数字${plain}"
+        return 1
+    fi
+    
+    # 检查端口是否被占用
+    if netstat -tuln 2>/dev/null | grep -q ":$new_port "; then
+        echo -e "${red}错误：端口 $new_port 已被占用${plain}"
+        netstat -tuln | grep ":$new_port "
+        return 1
+    fi
+    
+    echo -e "${yellow}将SSH端口从 $current_port 更改为 $new_port${plain}"
+    read -rp "确认更改SSH端口？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 备份SSH配置文件
+    local backup_file="${sshd_config}.backup.$(date +%Y%m%d_%H%M%S)"
+    echo -e "${yellow}备份SSH配置文件到：${plain}${cyan}$backup_file${plain}"
+    cp "$sshd_config" "$backup_file"
+    
+    # 修改SSH配置
+    echo -e "${yellow}修改SSH配置...${plain}"
+    if grep -q "^Port " "$sshd_config"; then
+        sed -i "s/^Port .*/Port $new_port/" "$sshd_config"
+    else
+        echo "Port $new_port" >> "$sshd_config"
+    fi
+    
+    # 检查并修改套接字配置（systemd）
+    echo -e "${yellow}检查SSH套接字配置...${plain}"
+    local ssh_socket="/etc/systemd/system/ssh.socket.d/listen.conf"
+    local sshd_socket="/etc/systemd/system/sshd.socket.d/listen.conf"
+    
+    # 为ssh服务创建套接字配置
+    if systemctl list-unit-files | grep -q "ssh.socket"; then
+        mkdir -p "$(dirname "$ssh_socket")"
+        echo -e "${yellow}配置 ssh.socket...${plain}"
+        cat > "$ssh_socket" << EOF
+[Socket]
+ListenStream=
+ListenStream=$new_port
+EOF
+    fi
+    
+    # 为sshd服务创建套接字配置
+    if systemctl list-unit-files | grep -q "sshd.socket"; then
+        mkdir -p "$(dirname "$sshd_socket")"
+        echo -e "${yellow}配置 sshd.socket...${plain}"
+        cat > "$sshd_socket" << EOF
+[Socket]
+ListenStream=
+ListenStream=$new_port
+EOF
+    fi
+    
+    # 重新加载systemd配置
+    echo -e "${yellow}重新加载systemd配置...${plain}"
+    systemctl daemon-reload
+    
+    # 验证SSH配置
+    echo -e "${yellow}验证SSH配置...${plain}"
+    if sshd -t; then
+        echo -e "${green}✓ SSH配置验证通过${plain}"
+        
+        # 更新防火墙规则（如果有的话）
+        echo -e "${yellow}更新防火墙规则...${plain}"
+        
+        # ufw (Ubuntu/Debian)
+        if command -v ufw >/dev/null 2>&1 && ufw status | grep -q "Status: active"; then
+            echo -e "${cyan}更新UFW防火墙规则...${plain}"
+            ufw allow "$new_port/tcp" comment 'SSH'
+            if [[ "$current_port" != "22" ]]; then
+                ufw delete allow "$current_port/tcp" 2>/dev/null || true
+            fi
+        fi
+        
+        # firewalld (CentOS/RHEL/Fedora)
+        if command -v firewall-cmd >/dev/null 2>&1 && systemctl is-active --quiet firewalld; then
+            echo -e "${cyan}更新firewalld防火墙规则...${plain}"
+            firewall-cmd --permanent --add-port="$new_port/tcp"
+            if [[ "$current_port" != "22" ]]; then
+                firewall-cmd --permanent --remove-port="$current_port/tcp" 2>/dev/null || true
+            fi
+            firewall-cmd --reload
+        fi
+        
+        # iptables直接规则
+        if command -v iptables >/dev/null 2>&1; then
+            echo -e "${cyan}添加iptables规则...${plain}"
+            iptables -A INPUT -p tcp --dport "$new_port" -j ACCEPT 2>/dev/null || true
+        fi
+        
+        # 重启SSH服务
+        echo -e "${yellow}重启SSH服务...${plain}"
+        
+        # 停止套接字服务（如果存在）
+        systemctl stop ssh.socket 2>/dev/null || true
+        systemctl stop sshd.socket 2>/dev/null || true
+        
+        # 重启SSH服务
+        if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
+            echo -e "${green}✓ SSH服务已重启${plain}"
+            
+            # 启动套接字服务（如果存在）
+            systemctl start ssh.socket 2>/dev/null || true
+            systemctl start sshd.socket 2>/dev/null || true
+            
+            echo -e "${green}✓ SSH端口已成功更改为 $new_port${plain}"
+            
+            # 验证端口监听状态
+            echo -e "${yellow}验证端口监听状态...${plain}"
+            sleep 3
+            if netstat -tuln 2>/dev/null | grep -q ":$new_port "; then
+                echo -e "${green}✓ SSH正在监听端口 $new_port${plain}"
+                netstat -tuln | grep ":$new_port "
+            else
+                echo -e "${red}⚠ 未检测到端口 $new_port 的监听状态${plain}"
+            fi
+            
+        else
+            echo -e "${red}✗ SSH服务重启失败，恢复配置${plain}"
+            cp "$backup_file" "$sshd_config"
+            systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null
+            return 1
+        fi
+    else
+        echo -e "${red}✗ SSH配置验证失败，恢复备份${plain}"
+        cp "$backup_file" "$sshd_config"
+        return 1
+    fi
+    
+    echo -e "\n${green}=== SSH端口更改完成 ===${plain}"
+    echo -e "${yellow}重要信息：${plain}"
+    echo -e "  - 新SSH端口：${cyan}$new_port${plain}"
+    echo -e "  - 旧SSH端口：${yellow}$current_port${plain}"
+    echo -e "  - 配置备份：${cyan}$backup_file${plain}"
+    echo -e "\n${red}⚠ 重要提醒：${plain}"
+    echo -e "  - ${red}请立即测试新端口的SSH连接${plain}"
+    echo -e "  - ${yellow}连接命令：ssh -p $new_port user@server${plain}"
+    echo -e "  - ${red}确认新端口可用后再断开当前连接${plain}"
+    echo -e "  - ${yellow}如果无法连接，请使用其他方式访问服务器恢复配置${plain}"
+}
+
+# 服务器安全设置主菜单
+server_security_menu() {
+    echo -e "\n${yellow}服务器安全设置：${plain}"
+    echo -e "  ${cyan}1.${plain} 添加SSH密钥登录"
+    echo -e "  ${cyan}2.${plain} 禁止密码登录"
+    echo -e "  ${cyan}3.${plain} 安装Fail2ban并配置（600小时封禁）"
+    echo -e "  ${cyan}4.${plain} 更新系统包"
+    echo -e "  ${cyan}5.${plain} 更改SSH登录端口"
+    read -rp "请选择操作 [1-5]: " security_choice
+    
+    case $security_choice in
+        1)
+            setup_ssh_key_login
+            ;;
+        2)
+            disable_password_login
+            ;;
+        3)
+            setup_fail2ban
+            ;;
+        4)
+            update_system_packages
+            ;;
+        5)
+            change_ssh_port
+            ;;
+        *)
+            echo -e "${red}无效的选择${plain}"
+            ;;
+    esac
 }
 
 # 脚本主入口
