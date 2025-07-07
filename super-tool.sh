@@ -667,6 +667,63 @@ except Exception as e:
 " 2>/dev/null
 }
 
+# 更新V2bX主配置文件中指定节点的Hysteria2ConfigPath
+update_hy2_config_path() {
+    local node_id=$1
+    local new_config_path=$2
+    local config_file="/etc/V2bX/config.json"
+    
+    if [[ ! -f "$config_file" ]]; then
+        echo -e "${red}错误：找不到配置文件 ${config_file}${plain}"
+        return 1
+    fi
+    
+    echo -e "${yellow}更新节点 ${node_id} 的配置文件路径到 ${new_config_path}...${plain}"
+    
+    # 使用Python更新JSON配置
+    python3 << EOF
+import json
+import sys
+
+config_file = "$config_file"
+node_id = "$node_id"
+new_config_path = "$new_config_path"
+
+try:
+    # 读取配置文件
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    # 查找并更新指定节点的配置路径
+    updated = False
+    if 'Nodes' in config:
+        for node in config['Nodes']:
+            if str(node.get('NodeID')) == str(node_id):
+                # 确保这是 hysteria2 节点
+                if node.get('Core') == 'hysteria2' or node.get('NodeType') == 'hysteria2':
+                    node['Hysteria2ConfigPath'] = new_config_path
+                    updated = True
+                    print(f"已更新节点 {node_id} 的配置路径为: {new_config_path}")
+                    break
+    
+    if updated:
+        # 写回配置文件
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=2, ensure_ascii=False)
+        print("配置文件更新成功")
+        sys.exit(0)
+    else:
+        print(f"未找到节点 {node_id} 或节点不是 hysteria2 类型")
+        sys.exit(1)
+        
+except Exception as e:
+    print(f"更新配置文件失败: {e}")
+    sys.exit(1)
+EOF
+    
+    return $?
+}
+
 # 配置 hysteria2 出站规则
 setup_hy2_outbound() {
     echo -e "${green}=== Hysteria2 节点出站规则配置 ===${plain}"
@@ -732,10 +789,13 @@ setup_hy2_outbound() {
             
             # 解析 socks5 URL
             if parse_socks5_url "$socks5_url"; then
+                # 生成带节点ID的配置文件路径
+                local new_config_path="/etc/V2bX/hy2config_${node_id}.yaml"
+                
                 # 确认配置
                 echo -e "\n${yellow}请确认节点 ${node_id} 的出站配置：${plain}"
                 echo -e "  节点ID: ${cyan}${node_id}${plain}"
-                echo -e "  配置文件: ${cyan}${config_path}${plain}"
+                echo -e "  配置文件: ${cyan}${new_config_path}${plain}"
                 echo -e "  SOCKS5服务器: ${cyan}${host}:${port}${plain}"
                 echo -e "  用户名: ${cyan}${username}${plain}"
                 echo -e "  密码: ${cyan}${password}${plain}"
@@ -743,12 +803,18 @@ setup_hy2_outbound() {
                 read -rp "确认创建此配置？(y/n): " confirm
                 if [[ "$confirm" == [Yy] ]]; then
                     # 创建配置目录
-                    mkdir -p "$(dirname "$config_path")"
+                    mkdir -p "$(dirname "$new_config_path")"
                     
                     # 生成配置文件
-                    generate_hy2_config "$config_path" "$host" "$port" "$username" "$password"
+                    generate_hy2_config "$new_config_path" "$host" "$port" "$username" "$password"
                     
-                    echo -e "${green}节点 ${node_id} 配置完成！${plain}"
+                    # 更新V2bX主配置文件中的Hysteria2ConfigPath
+                    if update_hy2_config_path "$node_id" "$new_config_path"; then
+                        echo -e "${green}节点 ${node_id} 配置完成！${plain}"
+                        echo -e "${green}已更新主配置文件中的配置路径${plain}"
+                    else
+                        echo -e "${yellow}配置文件已生成，但更新主配置失败，请手动检查${plain}"
+                    fi
                     break
                 else
                     echo -e "${yellow}已取消，请重新输入...${plain}"
@@ -3625,7 +3691,7 @@ modify_hostname_and_motd() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v4.2)${plain}
+  ${green}多功能服务器工具脚本 (v4.3)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
       ${yellow}1.${plain} 端口转发管理 (设置/查看规则)
