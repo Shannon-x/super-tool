@@ -17,9 +17,10 @@
 #   功能 12: DD系统重装 (使用reinstall脚本)
 #   功能 13: 修改主机名与登录信息
 #   功能 14: 更新脚本到最新版本
+#   功能 15: 服务器安全设置
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: 3.9
+#   版本: v4.5
 #====================================================
 
 # 颜色定义
@@ -1359,13 +1360,46 @@ import sys
 
 route_file = "$route_file"
 
-# 需要移除的支付相关规则模式
-payment_patterns = [
-    r'regexp:\(\.bank\.\)',  # .bank. 域名
-    r'regexp:\(\.\*\|\|\)\(visa\|mycard\|gash\|beanfun\|bank\)\.',  # visa|mycard|gash|beanfun|bank
-    r'regexp:\(\.\*\|\|\)\(mycard\)\.\(com\|tw\)',  # mycard.(com|tw)
-    r'regexp:\(\.\*\|\|\)\(gash\)\.\(com\|tw\)',    # gash.(com|tw)
+# 支付相关关键词 - 使用更灵活的匹配方式
+payment_keywords = [
+    'bank', 'visa', 'mycard', 'gash', 'beanfun', 
+    'mastercard', 'paypal', 'alipay', 'wechatpay',
+    'payment', 'pay.', 'checkout', 'billing'
 ]
+
+def is_payment_rule(domain_rule):
+    """检查域名规则是否与支付相关"""
+    if not domain_rule:
+        return False
+    
+    # 转换为小写进行比较
+    rule_lower = domain_rule.lower()
+    
+    # 检查是否包含支付相关关键词
+    for keyword in payment_keywords:
+        if keyword in rule_lower:
+            return True
+    
+    # 额外检查一些特定模式
+    payment_patterns = [
+        r'\.bank\.',
+        r'visa',
+        r'mycard',
+        r'gash',
+        r'beanfun',
+        r'mastercard',
+        r'paypal',
+        r'alipay',
+        r'payment',
+        r'checkout',
+        r'billing'
+    ]
+    
+    for pattern in payment_patterns:
+        if re.search(pattern, rule_lower):
+            return True
+    
+    return False
 
 try:
     # 读取配置文件
@@ -1388,15 +1422,10 @@ try:
                 # 过滤掉匹配的域名规则
                 filtered_domains = []
                 for domain in domains:
-                    should_remove = False
-                    for pattern in payment_patterns:
-                        if re.search(pattern, domain):
-                            should_remove = True
-                            removed_count += 1
-                            print(f"移除规则: {domain}")
-                            break
-                    
-                    if not should_remove:
+                    if is_payment_rule(domain):
+                        removed_count += 1
+                        print(f"移除规则: {domain}")
+                    else:
                         filtered_domains.append(domain)
                 
                 # 如果还有其他域名规则，保留这个规则但更新域名列表
@@ -1468,13 +1497,46 @@ import re
 
 route_file = "$route_file"
 
-# 支付相关规则模式
-payment_patterns = {
-    'bank': r'regexp:\(\.bank\.\)',
-    'visa_mycard_gash_beanfun': r'regexp:\(\.\*\|\|\)\(visa\|mycard\|gash\|beanfun\|bank\)\.',
-    'mycard_sites': r'regexp:\(\.\*\|\|\)\(mycard\)\.\(com\|tw\)',
-    'gash_sites': r'regexp:\(\.\*\|\|\)\(gash\)\.\(com\|tw\)',
-}
+# 支付相关关键词
+payment_keywords = [
+    'bank', 'visa', 'mycard', 'gash', 'beanfun', 
+    'mastercard', 'paypal', 'alipay', 'wechatpay',
+    'payment', 'pay.', 'checkout', 'billing'
+]
+
+def is_payment_rule(domain_rule):
+    """检查域名规则是否与支付相关"""
+    if not domain_rule:
+        return False
+    
+    # 转换为小写进行比较
+    rule_lower = domain_rule.lower()
+    
+    # 检查是否包含支付相关关键词
+    for keyword in payment_keywords:
+        if keyword in rule_lower:
+            return True
+    
+    # 额外检查一些特定模式
+    payment_patterns = [
+        r'\.bank\.',
+        r'visa',
+        r'mycard',
+        r'gash',
+        r'beanfun',
+        r'mastercard',
+        r'paypal',
+        r'alipay',
+        r'payment',
+        r'checkout',
+        r'billing'
+    ]
+    
+    for pattern in payment_patterns:
+        if re.search(pattern, rule_lower):
+            return True
+    
+    return False
 
 try:
     with open(route_file, 'r') as f:
@@ -1484,27 +1546,27 @@ try:
         print("配置文件中未找到 rules 字段")
         exit(1)
     
-    found_blocks = {}
+    found_payment_rules = []
+    total_block_rules = 0
     
     # 检查是否存在支付相关的阻断规则
     for rule in config['rules']:
         if rule.get('type') == 'field' and rule.get('outboundTag') == 'block':
             domains = rule.get('domain', [])
+            total_block_rules += len(domains)
             for domain in domains:
-                for name, pattern in payment_patterns.items():
-                    if re.search(pattern, domain):
-                        if name not in found_blocks:
-                            found_blocks[name] = []
-                        found_blocks[name].append(domain)
+                if is_payment_rule(domain):
+                    found_payment_rules.append(domain)
     
-    if found_blocks:
-        print("发现以下支付站点拦截规则:")
-        for name, rules in found_blocks.items():
-            print(f"  {name}: {len(rules)} 条规则")
-            for rule in rules:
-                print(f"    - {rule}")
+    print(f"总阻断规则数量: {total_block_rules}")
+    
+    if found_payment_rules:
+        print(f"\n发现 {len(found_payment_rules)} 条支付站点拦截规则:")
+        for i, rule in enumerate(found_payment_rules, 1):
+            print(f"  {i}. {rule}")
+        print(f"\n警告: 这些支付相关站点目前被拦截，可能影响在线支付功能")
     else:
-        print("未发现支付站点拦截规则 - 所有支付站点应该可以正常访问")
+        print("\n✅ 未发现支付站点拦截规则 - 所有支付站点应该可以正常访问")
     
 except Exception as e:
     print(f"检查配置文件时出错: {e}")
@@ -1590,16 +1652,131 @@ EOF
         return 1
     fi
     
-    echo -e "\n${yellow}将为以下shadowsocks节点添加中国大陆禁止规则：${plain}"
-    for node_info in "${ss_nodes[@]}"; do
-        IFS=':' read -r node_id api_host <<< "$node_info"
-        echo -e "  ${cyan}- 节点ID: ${node_id}, ApiHost: ${api_host}${plain}"
-    done
+    echo -e "\n${yellow}正在检查现有的中国大陆禁止规则...${plain}"
     
-    read -rp "确认为这些shadowsocks节点添加中国大陆禁止规则？(y/n): " confirm
-    if [[ "$confirm" != [Yy] ]]; then
-        echo -e "${yellow}操作已取消${plain}"
+    # 检查现有规则状态
+    local rules_status
+    rules_status=$(python3 << 'EOF'
+import json
+import sys
+
+config_file = "/etc/V2bX/config.json"
+route_file = "/etc/V2bX/route.json"
+
+try:
+    # 读取shadowsocks节点信息
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    ss_nodes = {}
+    if 'Nodes' in config:
+        for node in config['Nodes']:
+            if node.get('NodeType') == 'shadowsocks':
+                node_id = str(node.get('NodeID'))
+                api_host = node.get('ApiHost', '').replace('https://', '').replace('http://', '')
+                ss_nodes[node_id] = api_host
+    
+    # 读取路由规则
+    with open(route_file, 'r') as f:
+        route_config = json.load(f)
+    
+    # 检查现有的中国大陆禁止规则
+    existing_block_rules = {}
+    total_rules = len(route_config.get('rules', []))
+    
+    for rule in route_config.get('rules', []):
+        if (rule.get('type') == 'field' and 
+            rule.get('outboundTag') == 'block' and 
+            'geoip:cn' in rule.get('source', [])):
+            
+            inbound_tags = rule.get('inboundTag', [])
+            for tag in inbound_tags:
+                # 匹配shadowsocks节点格式: [host]-shadowsocks:nodeid
+                if '-shadowsocks:' in tag:
+                    parts = tag.split('-shadowsocks:')
+                    if len(parts) == 2:
+                        host_part = parts[0].strip('[]')
+                        node_id = parts[1]
+                        existing_block_rules[node_id] = {
+                            'host': host_part,
+                            'tag': tag,
+                            'rule_tag': rule.get('ruleTag', '')
+                        }
+    
+    print(f"总路由规则数量: {total_rules}")
+    print(f"Shadowsocks节点总数: {len(ss_nodes)}")
+    print(f"已有中国大陆禁止规则的SS节点数: {len(existing_block_rules)}")
+    
+    if existing_block_rules:
+        print("\n✅ 已存在中国大陆禁止规则的SS节点:")
+        for i, (node_id, info) in enumerate(existing_block_rules.items(), 1):
+            print(f"  {i}. 节点ID: {node_id}, 主机: {info['host']}")
+    
+    # 找出缺少规则的节点
+    missing_rules = []
+    for node_id, host in ss_nodes.items():
+        if node_id not in existing_block_rules:
+            missing_rules.append(f"{node_id}:{host}")
+    
+    if missing_rules:
+        print(f"\n⚠️  缺少中国大陆禁止规则的SS节点 ({len(missing_rules)} 个):")
+        for i, node_info in enumerate(missing_rules, 1):
+            node_id, host = node_info.split(':')
+            print(f"  {i}. 节点ID: {node_id}, 主机: {host}")
+        print("MISSING_RULES:" + "|".join(missing_rules))
+    else:
+        print("\n✅ 所有SS节点都已配置中国大陆禁止规则")
+        print("NO_MISSING_RULES")
+        
+except Exception as e:
+    print(f"检查规则状态时出错: {e}")
+    sys.exit(1)
+EOF
+    )
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}检查现有规则状态失败${plain}"
+        return 1
+    fi
+    
+    echo -e "${cyan}$rules_status${plain}" | grep -v "^MISSING_RULES:\|^NO_MISSING_RULES"
+    
+    # 检查是否有缺少规则的节点
+    local missing_rules_line
+    missing_rules_line=$(echo "$rules_status" | grep "^MISSING_RULES:")
+    
+    if [[ "$rules_status" == *"NO_MISSING_RULES"* ]]; then
+        echo -e "\n${green}✅ 所有shadowsocks节点都已正确配置中国大陆禁止规则${plain}"
+        echo -e "${yellow}无需添加新规则。${plain}"
         return 0
+    fi
+    
+    if [[ -n "$missing_rules_line" ]]; then
+        local missing_nodes_str="${missing_rules_line#MISSING_RULES:}"
+        local missing_nodes=()
+        
+        IFS='|' read -ra ADDR <<< "$missing_nodes_str"
+        for i in "${ADDR[@]}"; do
+            missing_nodes+=("$i")
+        done
+        
+        echo -e "\n${yellow}将为以下shadowsocks节点添加中国大陆禁止规则：${plain}"
+        for node_info in "${missing_nodes[@]}"; do
+            IFS=':' read -r node_id api_host <<< "$node_info"
+            echo -e "  ${cyan}- 节点ID: ${node_id}, ApiHost: ${api_host}${plain}"
+        done
+        
+        read -rp "确认为这些shadowsocks节点添加中国大陆禁止规则？(y/n): " confirm
+        if [[ "$confirm" != [Yy] ]]; then
+            echo -e "${yellow}操作已取消${plain}"
+            return 0
+        fi
+        
+        # 更新ss_nodes数组为缺少规则的节点
+        ss_nodes=("${missing_nodes[@]}")
+    else
+        echo -e "${red}未找到需要添加规则的节点${plain}"
+        return 1
     fi
     
     # 备份路由配置文件
