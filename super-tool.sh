@@ -136,66 +136,100 @@ setup_port_forwarding() {
     echo -e "${green}开始设置端口转发...${plain}"
     
     install_iptables_persistence
-
-    # 获取用户输入
-    read -rp "请选择协议 (1 for TCP, 2 for UDP, 3 for Both): " proto_choice
-    read -rp "请输入要转发的源端口或端口范围 (例如 8000 或 10000:20000): " source_ports
-    read -rp "请输入目标端口 (流量将被重定向到此端口): " dest_port
-
-    # 输入验证
-    if [[ -z "$source_ports" || -z "$dest_port" ]]; then
-        echo -e "${red}错误：源端口和目标端口不能为空！${plain}"
-        return 1
-    fi
-    # 简单验证端口格式
-    if ! [[ "$source_ports" =~ ^[0-9]+(:[0-9]+)?$ && "$dest_port" =~ ^[0-9]+$ ]]; then
-        echo -e "${red}错误：端口格式不正确！${plain}"
-        return 1
-    fi
-
-    # 定义要执行的操作
-    apply_rule() {
-        local proto=$1
-        echo -e "\n${yellow}准备应用以下规则:${plain}"
-        local cmd="iptables -t nat -A PREROUTING -p ${proto} --dport ${source_ports} -j REDIRECT --to-ports ${dest_port}"
-        echo -e "${green}${cmd}${plain}"
-        
-        read -rp "确认应用此规则吗? (y/n): " confirm
-        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-            eval ${cmd}
-            echo -e "${green}规则已应用！${plain}"
-        else
-            echo -e "${red}操作已取消。${plain}"
-            return 1
-        fi
-    }
-
-    local success=0
-    case $proto_choice in
-        1)
-            apply_rule "tcp" || success=1
-            ;;
-        2)
-            apply_rule "udp" || success=1
-            ;;
-        3)
-            apply_rule "tcp" || success=1
-            if [[ $success -eq 0 ]]; then
-                apply_rule "udp" || success=1
-            fi
-            ;;
-        *)
-            echo -e "${red}无效的协议选择。${plain}"
-            return 1
-            ;;
-    esac
     
-    # 如果规则应用成功，则持久化
-    if [[ $success -eq 0 ]]; then
-        persist_rules
-        echo -e "\n${green}端口转发设置完成！${plain}"
+    local rule_count=0
+    local continue_setup=true
+    
+    while [[ "$continue_setup" == true ]]; do
+        ((rule_count++))
+        echo -e "\n${cyan}=== 设置第 ${rule_count} 条端口转发规则 ===${plain}"
+        
+        # 获取用户输入
+        read -rp "请选择协议 (1 for TCP, 2 for UDP, 3 for Both): " proto_choice
+        read -rp "请输入要转发的源端口或端口范围 (例如 8000 或 10000:20000): " source_ports
+        read -rp "请输入目标端口 (流量将被重定向到此端口): " dest_port
+
+        # 输入验证
+        if [[ -z "$source_ports" || -z "$dest_port" ]]; then
+            echo -e "${red}错误：源端口和目标端口不能为空！${plain}"
+            ((rule_count--))
+            continue
+        fi
+        # 简单验证端口格式
+        if ! [[ "$source_ports" =~ ^[0-9]+(:[0-9]+)?$ && "$dest_port" =~ ^[0-9]+$ ]]; then
+            echo -e "${red}错误：端口格式不正确！${plain}"
+            ((rule_count--))
+            continue
+        fi
+
+        # 定义要执行的操作
+        apply_rule() {
+            local proto=$1
+            echo -e "\n${yellow}准备应用以下规则:${plain}"
+            local cmd="iptables -t nat -A PREROUTING -p ${proto} --dport ${source_ports} -j REDIRECT --to-ports ${dest_port}"
+            echo -e "${green}${cmd}${plain}"
+            
+            read -rp "确认应用此规则吗? (y/n): " confirm
+            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+                eval ${cmd}
+                echo -e "${green}规则已应用！${plain}"
+                return 0
+            else
+                echo -e "${red}操作已取消。${plain}"
+                return 1
+            fi
+        }
+
+        local success=0
+        case $proto_choice in
+            1)
+                apply_rule "tcp" || success=1
+                ;;
+            2)
+                apply_rule "udp" || success=1
+                ;;
+            3)
+                apply_rule "tcp" || success=1
+                if [[ $success -eq 0 ]]; then
+                    apply_rule "udp" || success=1
+                fi
+                ;;
+            *)
+                echo -e "${red}无效的协议选择。${plain}"
+                ((rule_count--))
+                continue
+                ;;
+        esac
+        
+        # 如果当前规则设置失败，减少计数器
+        if [[ $success -ne 0 ]]; then
+            ((rule_count--))
+            continue
+        fi
+        
+        # 显示当前规则状态
+        echo -e "\n${green}第 ${rule_count} 条规则设置完成！${plain}"
         echo -e "${yellow}当前PREROUTING规则列表:${plain}"
         iptables -t nat -L PREROUTING -n --line-numbers
+        
+        # 询问是否继续添加规则
+        echo -e "\n${cyan}是否继续设置下一条端口转发规则？${plain}"
+        read -rp "请选择 (y/n): " continue_choice
+        
+        if [[ "$continue_choice" != "y" && "$continue_choice" != "Y" ]]; then
+            continue_setup=false
+        fi
+    done
+    
+    # 所有规则设置完成后，进行持久化
+    if [[ $rule_count -gt 0 ]]; then
+        persist_rules
+        echo -e "\n${green}=== 端口转发设置完成！===${plain}"
+        echo -e "${yellow}总共设置了 ${rule_count} 条端口转发规则${plain}"
+        echo -e "${yellow}最终PREROUTING规则列表:${plain}"
+        iptables -t nat -L PREROUTING -n --line-numbers
+    else
+        echo -e "\n${yellow}未设置任何端口转发规则${plain}"
     fi
 }
 
@@ -3501,7 +3535,7 @@ modify_hostname_and_motd() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v3.9)${plain}
+  ${green}多功能服务器工具脚本 (v4.0)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
   ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
