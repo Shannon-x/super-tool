@@ -20,7 +20,7 @@
 #   功能 15: 服务器安全设置
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: v4.5
+#   版本: v4.6
 #====================================================
 
 # 颜色定义
@@ -1005,7 +1005,8 @@ try:
     
     if nodes:
         for node in nodes:
-            api_host = node['ApiHost'].replace('https://', '').replace('http://', '')
+            # 保留完整的ApiHost，因为面板在inboundTag中使用完整的URL
+            api_host = node['ApiHost']
             print(f"NODE:{node['NodeID']}:{node['NodeType']}:{api_host}")
     else:
         print("NO_NODES")
@@ -1318,6 +1319,141 @@ setup_vless_ss_outbound() {
 }
 
 ############################################################
+# 修复现有路由配置中的inboundTag问题
+############################################################
+
+# 修复现有路由配置文件中的inboundTag格式
+fix_inbound_tags() {
+    echo -e "${green}=== 修复路由配置中的inboundTag格式 ===${plain}"
+    
+    local config_file="/etc/V2bX/config.json"
+    local route_file="/etc/V2bX/route.json"
+    
+    # 检查配置文件
+    if [[ ! -f "$config_file" ]]; then
+        echo -e "${red}错误：找不到 V2bX 配置文件 ${config_file}${plain}"
+        return 1
+    fi
+    
+    if [[ ! -f "$route_file" ]]; then
+        echo -e "${red}错误：找不到路由配置文件 ${route_file}${plain}"
+        return 1
+    fi
+    
+    # 备份原配置文件
+    local backup_file="${route_file}.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "$route_file" "$backup_file"
+    echo -e "${green}已备份原配置文件到：${plain}${backup_file}"
+    
+    echo -e "${yellow}正在分析并修复inboundTag格式...${plain}"
+    
+    # 使用Python修复inboundTag格式
+    python3 << 'EOF'
+import json
+import sys
+
+config_file = "/etc/V2bX/config.json"
+route_file = "/etc/V2bX/route.json"
+
+try:
+    # 读取V2bX配置文件获取正确的ApiHost格式
+    with open(config_file, 'r') as f:
+        v2bx_config = json.load(f)
+    
+    # 构建节点ID到完整ApiHost的映射
+    node_host_mapping = {}
+    if 'Nodes' in v2bx_config:
+        for node in v2bx_config['Nodes']:
+            if node.get('NodeType') in ['vless', 'shadowsocks']:
+                node_id = str(node.get('NodeID'))
+                api_host = node.get('ApiHost', '')
+                node_host_mapping[node_id] = api_host
+    
+    print(f"找到 {len(node_host_mapping)} 个节点的主机信息")
+    
+    # 读取路由配置文件
+    with open(route_file, 'r') as f:
+        route_config = json.load(f)
+    
+    if 'rules' not in route_config:
+        print("路由配置文件中未找到 rules 字段")
+        sys.exit(1)
+    
+    fixed_count = 0
+    
+    # 遍历所有路由规则
+    for rule in route_config['rules']:
+        if rule.get('type') == 'field' and 'inboundTag' in rule:
+            inbound_tags = rule.get('inboundTag', [])
+            new_inbound_tags = []
+            
+            for tag in inbound_tags:
+                fixed_tag = tag
+                
+                # 检查是否是节点相关的inboundTag
+                if '-vless:' in tag or '-shadowsocks:' in tag:
+                    # 提取节点ID和协议类型
+                    if '-vless:' in tag:
+                        parts = tag.split('-vless:')
+                        protocol = 'vless'
+                    else:
+                        parts = tag.split('-shadowsocks:')
+                        protocol = 'shadowsocks'
+                    
+                    if len(parts) == 2:
+                        current_host = parts[0].strip('[]')
+                        node_id = parts[1]
+                        
+                        # 查找正确的主机格式
+                        if node_id in node_host_mapping:
+                            correct_host = node_host_mapping[node_id]
+                            correct_tag = f"[{correct_host}]-{protocol}:{node_id}"
+                            
+                            if tag != correct_tag:
+                                print(f"修复 inboundTag:")
+                                print(f"  原格式: {tag}")
+                                print(f"  新格式: {correct_tag}")
+                                fixed_tag = correct_tag
+                                fixed_count += 1
+                
+                new_inbound_tags.append(fixed_tag)
+            
+            rule['inboundTag'] = new_inbound_tags
+    
+    # 写回修复后的配置
+    with open(route_file, 'w') as f:
+        json.dump(route_config, f, indent=2, ensure_ascii=False)
+    
+    print(f"\n修复完成:")
+    print(f"总修复的inboundTag数量: {fixed_count}")
+    print(f"路由规则总数: {len(route_config['rules'])}")
+    
+    if fixed_count > 0:
+        print("\n✅ inboundTag格式已修复，现在应能正确匹配路由规则")
+    else:
+        print("\n✅ 所有inboundTag格式都正确，无需修复")
+    
+except Exception as e:
+    print(f"修复配置文件时出错: {e}")
+    sys.exit(1)
+EOF
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "\n${green}=== inboundTag格式修复完成 ===${plain}"
+        echo -e "${yellow}配置文件已更新：${plain}${cyan}${route_file}${plain}"
+        echo -e "${yellow}修复内容：${plain}"
+        echo -e "  - ${cyan}确保inboundTag包含完整的ApiHost（包括协议前缀）${plain}"
+        echo -e "  - ${cyan}匹配面板实际生成的标签格式${plain}"
+        echo -e "\n${yellow}提示：修复完成后，请重启 V2bX 服务使配置生效${plain}"
+        echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
+    else
+        echo -e "${red}修复inboundTag格式失败，请检查配置文件${plain}"
+        echo -e "${yellow}可以使用备份文件恢复：${plain}${cyan}cp ${backup_file} ${route_file}${plain}"
+        return 1
+    fi
+}
+
+############################################################
 # 选项 5: 移除银行和支付站点拦截规则
 ############################################################
 
@@ -1618,7 +1754,8 @@ try:
     if ss_nodes:
         print(f"找到 {len(ss_nodes)} 个shadowsocks节点:")
         for i, node in enumerate(ss_nodes, 1):
-            api_host = node['ApiHost'].replace('https://', '').replace('http://', '')
+            # 保留完整的ApiHost，因为面板在inboundTag中使用完整的URL
+            api_host = node['ApiHost']
             print(f"{i}. NodeID: {node['NodeID']}, ApiHost: {api_host}")
             print(f"SS_NODE:{node['NodeID']}:{api_host}")
     else:
@@ -1673,7 +1810,8 @@ try:
         for node in config['Nodes']:
             if node.get('NodeType') == 'shadowsocks':
                 node_id = str(node.get('NodeID'))
-                api_host = node.get('ApiHost', '').replace('https://', '').replace('http://', '')
+                # 保留完整的ApiHost，因为面板在inboundTag中使用完整的URL
+                api_host = node.get('ApiHost', '')
                 ss_nodes[node_id] = api_host
     
     # 读取路由规则
@@ -1691,7 +1829,7 @@ try:
             
             inbound_tags = rule.get('inboundTag', [])
             for tag in inbound_tags:
-                # 匹配shadowsocks节点格式: [host]-shadowsocks:nodeid
+                # 匹配shadowsocks节点格式: [host]-shadowsocks:nodeid 或 [https://host]-shadowsocks:nodeid
                 if '-shadowsocks:' in tag:
                     parts = tag.split('-shadowsocks:')
                     if len(parts) == 2:
@@ -3868,7 +4006,7 @@ modify_hostname_and_motd() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v4.3)${plain}
+  ${green}多功能服务器工具脚本 (v4.6)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
       ${yellow}1.${plain} 端口转发管理 (设置/查看规则)
@@ -3906,12 +4044,13 @@ show_menu() {
             setup_vless_ss_outbound
             ;;
         5)
-            # 提供子选项：查看状态、移除拦截或为SS节点添加中国大陆禁止规则
+            # 提供子选项：查看状态、移除拦截、为SS节点添加中国大陆禁止规则，或修复inboundTag
             echo -e "\n${yellow}支付站点拦截管理与shadowsocks节点安全：${plain}"
             echo -e "  ${cyan}1.${plain} 查看当前拦截状态"
             echo -e "  ${cyan}2.${plain} 移除银行和支付站点拦截规则"
             echo -e "  ${cyan}3.${plain} 检查shadowsocks节点并添加中国大陆禁止规则"
-            read -rp "请选择操作 [1-3]: " payment_choice
+            echo -e "  ${cyan}4.${plain} 修复路由配置中的inboundTag格式问题"
+            read -rp "请选择操作 [1-4]: " payment_choice
             
             case $payment_choice in
                 1)
@@ -3922,6 +4061,9 @@ show_menu() {
                     ;;
                 3)
                     check_and_block_ss_china
+                    ;;
+                4)
+                    fix_inbound_tags
                     ;;
                 *)
                     echo -e "${red}无效的选择${plain}"
