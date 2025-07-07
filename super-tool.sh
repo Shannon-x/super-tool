@@ -233,6 +233,96 @@ setup_port_forwarding() {
     fi
 }
 
+# 查看当前端口转发规则
+show_port_forwarding_rules() {
+    echo -e "${green}=== 当前端口转发规则 ===${plain}"
+    
+    # 检查iptables是否存在
+    if ! command -v iptables >/dev/null 2>&1; then
+        echo -e "${red}错误：未找到 iptables 命令${plain}"
+        return 1
+    fi
+    
+    echo -e "${yellow}正在查询NAT表的PREROUTING链规则...${plain}\n"
+    
+    # 获取PREROUTING规则
+    local prerouting_rules
+    prerouting_rules=$(iptables -t nat -L PREROUTING -n --line-numbers 2>/dev/null)
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}错误：无法读取iptables规则，可能需要root权限${plain}"
+        return 1
+    fi
+    
+    # 计算总规则数量（排除标题行）
+    local rule_count
+    rule_count=$(echo "$prerouting_rules" | grep -c "REDIRECT\|DNAT" 2>/dev/null || echo "0")
+    
+    if [[ $rule_count -eq 0 ]]; then
+        echo -e "${yellow}未发现任何端口转发规则${plain}"
+        echo -e "${cyan}提示：可以选择功能1中的'设置端口转发'来添加新规则${plain}"
+    else
+        echo -e "${green}发现 $rule_count 条端口转发规则：${plain}\n"
+        
+        # 显示规则标题
+        echo -e "${cyan}规则编号  目标        协议   选项              来源地址         目标地址${plain}"
+        echo -e "${cyan}--------  ----------  -----  ---------------  ---------------  ---------------${plain}"
+        
+        # 显示具体规则，只显示REDIRECT和DNAT类型的规则
+        echo "$prerouting_rules" | grep -E "REDIRECT|DNAT" | while IFS= read -r line; do
+            echo -e "${yellow}$line${plain}"
+        done
+        
+        echo -e "\n${cyan}规则说明：${plain}"
+        echo -e "  - ${yellow}REDIRECT${plain}：将流量重定向到本机的其他端口"
+        echo -e "  - ${yellow}DNAT${plain}：将流量转发到其他主机"
+        echo -e "  - ${cyan}tcp/udp${plain}：协议类型"
+        echo -e "  - ${cyan}dpt:端口${plain}：目标端口"
+        echo -e "  - ${cyan}redir ports 端口${plain}：重定向到的端口"
+    fi
+    
+    # 显示OUTPUT链的相关规则（如果有的话）
+    echo -e "\n${yellow}检查NAT表OUTPUT链规则...${plain}"
+    local output_rules
+    output_rules=$(iptables -t nat -L OUTPUT -n --line-numbers 2>/dev/null | grep -c "REDIRECT\|DNAT" 2>/dev/null || echo "0")
+    
+    if [[ $output_rules -gt 0 ]]; then
+        echo -e "${green}发现 $output_rules 条OUTPUT链转发规则：${plain}"
+        iptables -t nat -L OUTPUT -n --line-numbers | grep -E "REDIRECT|DNAT" | while IFS= read -r line; do
+            echo -e "${yellow}$line${plain}"
+        done
+    else
+        echo -e "${cyan}OUTPUT链未发现端口转发规则${plain}"
+    fi
+    
+    # 提供额外信息
+    echo -e "\n${cyan}=== 管理选项 ===${plain}"
+    echo -e "${yellow}查看完整NAT表：${plain} iptables -t nat -L -n --line-numbers"
+    echo -e "${yellow}删除规则示例：${plain} iptables -t nat -D PREROUTING <规则编号>"
+    echo -e "${yellow}清空所有规则：${plain} iptables -t nat -F"
+    echo -e "${red}注意：删除规则前请确保了解其作用，误删可能影响网络连接${plain}"
+}
+
+# 端口转发管理主菜单
+port_forwarding_menu() {
+    echo -e "\n${yellow}端口转发管理：${plain}"
+    echo -e "  ${cyan}1.${plain} 设置新的端口转发规则"
+    echo -e "  ${cyan}2.${plain} 查看当前端口转发规则"
+    read -rp "请选择操作 [1-2]: " port_choice
+    
+    case $port_choice in
+        1)
+            setup_port_forwarding
+            ;;
+        2)
+            show_port_forwarding_rules
+            ;;
+        *)
+            echo -e "${red}无效的选择${plain}"
+            ;;
+    esac
+}
+
 
 ############################################################
 # 选项 2: V2bX 安装/更新功能
@@ -3535,10 +3625,10 @@ modify_hostname_and_motd() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v4.0)${plain}
+  ${green}多功能服务器工具脚本 (v4.1)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
-  ${yellow}1.${plain} 设置端口转发 (IPTables Redirect)
+      ${yellow}1.${plain} 端口转发管理 (设置/查看规则)
   ${yellow}2.${plain} 安装 / 更新 V2bX
   ${yellow}3.${plain} 为 Hysteria2 节点设置出站规则
   ${yellow}4.${plain} 为 vless/shadowsocks 节点配置出站规则
@@ -3560,7 +3650,7 @@ show_menu() {
             exit 0
             ;;
         1)
-            setup_port_forwarding
+            port_forwarding_menu
             ;;
         2)
             run_v2bx_installer
