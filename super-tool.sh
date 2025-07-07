@@ -3253,8 +3253,34 @@ generate_ascii_art() {
     local MAGENTA='\033[1;35m'
     local WHITE='\033[1;37m'
     local NC='\033[0m'
-    
-    # 彩色输出
+    local BOX_WIDTH=46  # 方框内容宽度（不含边框符号）
+
+    # 计算字符串显示宽度（中文2，英文1）
+    str_display_width() {
+        local s="$1"
+        # 使用awk统计宽度：中文2，英文1
+        echo -n "$s" | awk '{
+            n=split($0,a,"");w=0;
+            for(i=1;i<=n;i++){
+                c=a[i];
+                if (c ~ /[\x{4e00}-\x{9fa5}\x{3400}-\x{4dbf}\x{20000}-\x{2a6df}\x{2a700}-\x{2b73f}\x{2b740}-\x{2b81f}\x{2b820}-\x{2ceaf}\x{f900}-\x{faff}\x{2f800}-\x{2fa1f}]/) w+=2; else w+=1;
+            }
+            print w;
+        }'
+    }
+
+    # 输出一行内容，自动补空格对齐
+    print_box_line() {
+        local content="$1"
+        local color="$2"
+        local width=$(str_display_width "$content")
+        local pad=$((BOX_WIDTH - width))
+        local spaces=""
+        for ((i=0;i<pad;i++)); do spaces+=" "; done
+        echo -e "${YELLOW}┃${NC} ${color}${content}${NC}${spaces}${YELLOW}┃${NC}"
+    }
+
+    # 输出顶部
     echo -e "${CYAN}  █████╗ ██╗██████╗ ███████╗██╗   ██╗███████╗███████╗${NC}"
     echo -e "${CYAN} ██╔══██╗██║██╔══██╗██╔════╝██║   ██║██╔════╝██╔════╝${NC}"
     echo -e "${CYAN} ███████║██║██████╔╝███████╗██║   ██║█████╗  █████╗  ${NC}"
@@ -3263,10 +3289,10 @@ generate_ascii_art() {
     echo -e "${CYAN} ╚═╝  ╚═╝╚═╝╚═╝  ╚═╝╚══════╝ ╚═════╝ ╚═╝     ╚══════╝${NC}"
     echo -e "${WHITE}                                                     ${NC}"
     echo -e "${YELLOW}┏━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓${NC}"
-    echo -e "${YELLOW}┃   ${RED}苏菲家宽${YELLOW} - ${GREEN}极度纯净家宽网络${YELLOW}           ┃${NC}"
-    echo -e "${YELLOW}┃   ${BLUE}AirSufe${WHITE} Network Service${YELLOW}                  ┃${NC}"
-    echo -e "${YELLOW}┃   ${MAGENTA}家宽主机：${CYAN}airsufe.com${YELLOW}                  ┃${NC}"
-    echo -e "${YELLOW}┃   ${MAGENTA}家宽代理：${CYAN}sufe.pro${YELLOW}                     ┃${NC}"
+    print_box_line "苏菲家宽 - 极度纯净家宽网络" "${RED}${BOLD}"
+    print_box_line "AirSufe Network Service" "${BLUE}${BOLD}"
+    print_box_line "家宽主机：airsufe.com" "${MAGENTA}${BOLD}${WHITE}"
+    print_box_line "家宽代理：sufe.pro" "${MAGENTA}${BOLD}${WHITE}"
     echo -e "${YELLOW}┗━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┛${NC}"
 }
 
