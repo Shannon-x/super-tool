@@ -4027,8 +4027,9 @@ show_menu() {
   ${yellow}13.${plain} 修改主机名与登录信息
   ${yellow}14.${plain} 更新脚本到最新版本
   ${yellow}15.${plain} 服务器安全设置 (SSH/Fail2ban/更新)
+  ${yellow}16.${plain} 删除脚本并卸载isufe快捷命令
   ---"
-    read -rp "请输入选项 [0-15]: " choice
+    read -rp "请输入选项 [0-16]: " choice
     
     case $choice in
         0)
@@ -4103,8 +4104,11 @@ show_menu() {
         15)
             server_security_menu
             ;;
+        16)
+            uninstall_script
+            ;;
         *)
-            echo -e "${red}无效的选项，请输入 0-15${plain}"
+            echo -e "${red}无效的选项，请输入 0-16${plain}"
             ;;
     esac
 }
@@ -5058,6 +5062,165 @@ main() {
     fi
     
     show_menu
+}
+
+# 删除脚本并卸载isufe快捷命令
+uninstall_script() {
+    echo -e "${red}=== 删除脚本并卸载isufe快捷命令 ===${plain}"
+    
+    echo -e "${red}⚠ 警告：此操作将完全删除脚本和所有相关文件！${plain}"
+    echo -e "${yellow}将要执行的操作：${plain}"
+    echo -e "  1. 删除isufe快捷命令"
+    echo -e "  2. 删除脚本文件"
+    echo -e "  3. 清理用户别名配置"
+    echo -e "  4. 清理相关备份文件"
+    
+    echo -e "\n${red}此操作不可逆，请确认您真的要删除脚本！${plain}"
+    read -rp "请输入 'DELETE' 确认删除: " confirm_delete
+    
+    if [[ "$confirm_delete" != "DELETE" ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    echo -e "\n${yellow}开始执行删除操作...${plain}"
+    
+    # 1. 删除isufe快捷命令
+    echo -e "${yellow}步骤1: 删除isufe快捷命令...${plain}"
+    
+    # 检查并删除符号链接
+    local isufe_paths=("/usr/local/bin/isufe" "/usr/bin/isufe")
+    for path in "${isufe_paths[@]}"; do
+        if [[ -L "$path" ]]; then
+            echo -e "${cyan}删除符号链接: $path${plain}"
+            if sudo rm -f "$path" 2>/dev/null; then
+                echo -e "${green}✓ 已删除: $path${plain}"
+            else
+                echo -e "${red}✗ 删除失败: $path${plain}"
+            fi
+        elif [[ -f "$path" ]]; then
+            echo -e "${cyan}删除文件: $path${plain}"
+            if sudo rm -f "$path" 2>/dev/null; then
+                echo -e "${green}✓ 已删除: $path${plain}"
+            else
+                echo -e "${red}✗ 删除失败: $path${plain}"
+            fi
+        fi
+    done
+    
+    # 2. 删除脚本文件
+    echo -e "\n${yellow}步骤2: 删除脚本文件...${plain}"
+    
+    local script_path=$(realpath "$0")
+    local persistent_script="/usr/local/bin/super-tool.sh"
+    
+    # 删除当前脚本（如果不是从/proc运行）
+    if [[ "$script_path" != /proc/* ]] && [[ -f "$script_path" ]]; then
+        echo -e "${cyan}删除脚本文件: $script_path${plain}"
+        if rm -f "$script_path" 2>/dev/null; then
+            echo -e "${green}✓ 已删除: $script_path${plain}"
+        else
+            echo -e "${red}✗ 删除失败: $script_path${plain}"
+        fi
+    fi
+    
+    # 删除持久化脚本
+    if [[ -f "$persistent_script" ]]; then
+        echo -e "${cyan}删除持久化脚本: $persistent_script${plain}"
+        if sudo rm -f "$persistent_script" 2>/dev/null; then
+            echo -e "${green}✓ 已删除: $persistent_script${plain}"
+        else
+            echo -e "${red}✗ 删除失败: $persistent_script${plain}"
+        fi
+    fi
+    
+    # 3. 清理用户别名配置
+    echo -e "\n${yellow}步骤3: 清理用户别名配置...${plain}"
+    
+    local shell_configs=("$HOME/.bashrc" "$HOME/.zshrc" "$HOME/.profile" "$HOME/.bash_profile")
+    for config in "${shell_configs[@]}"; do
+        if [[ -f "$config" ]]; then
+            echo -e "${cyan}清理别名配置: $config${plain}"
+            # 备份配置文件
+            cp "$config" "${config}.backup.$(date +%Y%m%d_%H%M%S)" 2>/dev/null || true
+            
+            # 删除isufe别名
+            if grep -q "alias isufe=" "$config"; then
+                sed -i.bak "/alias isufe=/d" "$config" 2>/dev/null || true
+                echo -e "${green}✓ 已清理别名: $config${plain}"
+            fi
+        fi
+    done
+    
+    # 4. 清理相关备份文件
+    echo -e "\n${yellow}步骤4: 清理相关备份文件...${plain}"
+    
+    # 查找并删除相关的备份文件
+    local backup_patterns=(
+        "$HOME/.bashrc.backup.*"
+        "$HOME/.zshrc.backup.*"
+        "$HOME/.profile.backup.*"
+        "$HOME/.bash_profile.backup.*"
+        "/usr/local/bin/super-tool.sh.backup.*"
+    )
+    
+    for pattern in "${backup_patterns[@]}"; do
+        for file in $pattern; do
+            if [[ -f "$file" ]]; then
+                echo -e "${cyan}删除备份文件: $file${plain}"
+                rm -f "$file" 2>/dev/null || true
+            fi
+        done 2>/dev/null || true
+    done
+    
+    # 5. 验证删除结果
+    echo -e "\n${yellow}步骤5: 验证删除结果...${plain}"
+    
+    local deletion_success=true
+    
+    # 检查isufe命令是否还存在
+    if command -v isufe >/dev/null 2>&1; then
+        echo -e "${red}⚠ isufe命令仍然存在: $(which isufe)${plain}"
+        deletion_success=false
+    else
+        echo -e "${green}✓ isufe命令已成功删除${plain}"
+    fi
+    
+    # 检查脚本文件是否还存在
+    if [[ -f "$script_path" ]]; then
+        echo -e "${red}⚠ 脚本文件仍然存在: $script_path${plain}"
+        deletion_success=false
+    else
+        echo -e "${green}✓ 脚本文件已成功删除${plain}"
+    fi
+    
+    if [[ -f "$persistent_script" ]]; then
+        echo -e "${red}⚠ 持久化脚本仍然存在: $persistent_script${plain}"
+        deletion_success=false
+    else
+        echo -e "${green}✓ 持久化脚本已成功删除${plain}"
+    fi
+    
+    # 6. 完成提示
+    echo -e "\n${green}=== 删除操作完成 ===${plain}"
+    
+    if [[ "$deletion_success" == true ]]; then
+        echo -e "${green}✓ 脚本和isufe快捷命令已成功删除！${plain}"
+        echo -e "${yellow}提示：${plain}"
+        echo -e "  - 如果当前会话中有别名，请重新登录或运行 'source ~/.bashrc' 使更改生效"
+        echo -e "  - 所有相关文件已清理完毕"
+        echo -e "  - 感谢您使用super-tool脚本！"
+    else
+        echo -e "${yellow}⚠ 部分文件删除失败，请手动检查${plain}"
+        echo -e "${cyan}建议手动删除以下文件：${plain}"
+        echo -e "  - $(which isufe 2>/dev/null || echo "isufe命令位置")"
+        echo -e "  - $script_path"
+        echo -e "  - $persistent_script"
+    fi
+    
+    echo -e "\n${red}脚本将在5秒后退出...${plain}"
+    sleep 5
+    exit 0
 }
 
 # 执行主函数
