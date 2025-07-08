@@ -144,64 +144,64 @@ setup_port_forwarding() {
     while [[ "$continue_setup" == true ]]; do
         ((rule_count++))
         echo -e "\n${cyan}=== 设置第 ${rule_count} 条端口转发规则 ===${plain}"
+
+    # 获取用户输入
+    read -rp "请选择协议 (1 for TCP, 2 for UDP, 3 for Both): " proto_choice
+    read -rp "请输入要转发的源端口或端口范围 (例如 8000 或 10000:20000): " source_ports
+    read -rp "请输入目标端口 (流量将被重定向到此端口): " dest_port
+
+    # 输入验证
+    if [[ -z "$source_ports" || -z "$dest_port" ]]; then
+        echo -e "${red}错误：源端口和目标端口不能为空！${plain}"
+            ((rule_count--))
+            continue
+    fi
+    # 简单验证端口格式
+    if ! [[ "$source_ports" =~ ^[0-9]+(:[0-9]+)?$ && "$dest_port" =~ ^[0-9]+$ ]]; then
+        echo -e "${red}错误：端口格式不正确！${plain}"
+            ((rule_count--))
+            continue
+    fi
+
+    # 定义要执行的操作
+    apply_rule() {
+        local proto=$1
+        echo -e "\n${yellow}准备应用以下规则:${plain}"
+        local cmd="iptables -t nat -A PREROUTING -p ${proto} --dport ${source_ports} -j REDIRECT --to-ports ${dest_port}"
+        echo -e "${green}${cmd}${plain}"
         
-        # 获取用户输入
-        read -rp "请选择协议 (1 for TCP, 2 for UDP, 3 for Both): " proto_choice
-        read -rp "请输入要转发的源端口或端口范围 (例如 8000 或 10000:20000): " source_ports
-        read -rp "请输入目标端口 (流量将被重定向到此端口): " dest_port
-
-        # 输入验证
-        if [[ -z "$source_ports" || -z "$dest_port" ]]; then
-            echo -e "${red}错误：源端口和目标端口不能为空！${plain}"
-            ((rule_count--))
-            continue
-        fi
-        # 简单验证端口格式
-        if ! [[ "$source_ports" =~ ^[0-9]+(:[0-9]+)?$ && "$dest_port" =~ ^[0-9]+$ ]]; then
-            echo -e "${red}错误：端口格式不正确！${plain}"
-            ((rule_count--))
-            continue
-        fi
-
-        # 定义要执行的操作
-        apply_rule() {
-            local proto=$1
-            echo -e "\n${yellow}准备应用以下规则:${plain}"
-            local cmd="iptables -t nat -A PREROUTING -p ${proto} --dport ${source_ports} -j REDIRECT --to-ports ${dest_port}"
-            echo -e "${green}${cmd}${plain}"
-            
-            read -rp "确认应用此规则吗? (y/n): " confirm
-            if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
-                eval ${cmd}
-                echo -e "${green}规则已应用！${plain}"
+        read -rp "确认应用此规则吗? (y/n): " confirm
+        if [[ "$confirm" == "y" || "$confirm" == "Y" ]]; then
+            eval ${cmd}
+            echo -e "${green}规则已应用！${plain}"
                 return 0
-            else
-                echo -e "${red}操作已取消。${plain}"
-                return 1
-            fi
-        }
+        else
+            echo -e "${red}操作已取消。${plain}"
+            return 1
+        fi
+    }
 
-        local success=0
-        case $proto_choice in
-            1)
-                apply_rule "tcp" || success=1
-                ;;
-            2)
+    local success=0
+    case $proto_choice in
+        1)
+            apply_rule "tcp" || success=1
+            ;;
+        2)
+            apply_rule "udp" || success=1
+            ;;
+        3)
+            apply_rule "tcp" || success=1
+            if [[ $success -eq 0 ]]; then
                 apply_rule "udp" || success=1
-                ;;
-            3)
-                apply_rule "tcp" || success=1
-                if [[ $success -eq 0 ]]; then
-                    apply_rule "udp" || success=1
-                fi
-                ;;
-            *)
-                echo -e "${red}无效的协议选择。${plain}"
+            fi
+            ;;
+        *)
+            echo -e "${red}无效的协议选择。${plain}"
                 ((rule_count--))
                 continue
-                ;;
-        esac
-        
+            ;;
+    esac
+    
         # 如果当前规则设置失败，减少计数器
         if [[ $success -ne 0 ]]; then
             ((rule_count--))
@@ -811,7 +811,7 @@ setup_hy2_outbound() {
                     
                     # 更新V2bX主配置文件中的Hysteria2ConfigPath
                     if update_hy2_config_path "$node_id" "$new_config_path"; then
-                        echo -e "${green}节点 ${node_id} 配置完成！${plain}"
+                    echo -e "${green}节点 ${node_id} 配置完成！${plain}"
                         echo -e "${green}已更新主配置文件中的配置路径${plain}"
                     else
                         echo -e "${yellow}配置文件已生成，但更新主配置失败，请手动检查${plain}"
@@ -996,10 +996,11 @@ try:
     nodes = []
     if 'Nodes' in config:
         for node in config['Nodes']:
-            if node.get('NodeType') in ['vless', 'shadowsocks']:
+            node_type = (node.get('NodeType') or node.get('Core', '')).lower()
+            if node_type in ['vless', 'shadowsocks', 'shadowsocks2022']:
                 nodes.append({
                     'NodeID': node.get('NodeID'),
-                    'NodeType': node.get('NodeType'),
+                    'NodeType': node_type,
                     'ApiHost': node.get('ApiHost', '')
                 })
     
@@ -1021,7 +1022,8 @@ EOF
 # 生成路由规则
 generate_route_config() {
     local route_file="/etc/V2bX/route.json"
-    local node_mappings="$1"  # 格式: "NodeID:NodeType:ApiHost:SocksTag,..."
+    # 传入格式: "NodeID|NodeType|ApiHost|SocksTag,..."  使用 '|' 作为字段分隔符
+    local node_mappings="$1"
     
     # 备份原路由文件
     if [[ -f "$route_file" ]]; then
@@ -1039,7 +1041,7 @@ node_mappings = {}
 if mappings_str:
     for mapping in mappings_str.split(','):
         if mapping.strip():
-            parts = mapping.strip().split(':')
+            parts = mapping.strip().split('|')
             if len(parts) == 4:
                 node_id, node_type, api_host, socks_tag = parts
                 node_mappings[node_id] = {
@@ -1270,7 +1272,7 @@ setup_vless_ss_outbound() {
     
     echo -e "\n${yellow}=== 第四步：为每个节点选择socks出站 ===${plain}"
     
-    # 节点映射
+    # 节点映射（使用 '|' 分隔字段，逗号分隔不同节点，避免与 URL 中的 ':' 冲突）
     local node_mappings=""
     
     for node_info in "${nodes[@]}"; do
@@ -1294,9 +1296,9 @@ setup_vless_ss_outbound() {
                 
                 # 添加到映射
                 if [[ -n "$node_mappings" ]]; then
-                    node_mappings="${node_mappings},${node_id}:${node_type}:${api_host}:${selected_socks}"
+                    node_mappings="${node_mappings},${node_id}|${node_type}|${api_host}|${selected_socks}"
                 else
-                    node_mappings="${node_id}:${node_type}:${api_host}:${selected_socks}"
+                    node_mappings="${node_id}|${node_type}|${api_host}|${selected_socks}"
                 fi
                 break
             else
@@ -1364,7 +1366,8 @@ try:
     node_host_mapping = {}
     if 'Nodes' in v2bx_config:
         for node in v2bx_config['Nodes']:
-            if node.get('NodeType') in ['vless', 'shadowsocks']:
+            node_type = (node.get('NodeType') or node.get('Core', '')).lower()
+            if node_type in ['vless', 'shadowsocks', 'shadowsocks2022']:
                 node_id = str(node.get('NodeID'))
                 api_host = node.get('ApiHost', '')
                 node_host_mapping[node_id] = api_host
@@ -1517,7 +1520,7 @@ def is_payment_rule(domain_rule):
             return True
     
     # 额外检查一些特定模式
-    payment_patterns = [
+payment_patterns = [
         r'\.bank\.',
         r'visa',
         r'mycard',
@@ -1559,8 +1562,8 @@ try:
                 filtered_domains = []
                 for domain in domains:
                     if is_payment_rule(domain):
-                        removed_count += 1
-                        print(f"移除规则: {domain}")
+                            removed_count += 1
+                            print(f"移除规则: {domain}")
                     else:
                         filtered_domains.append(domain)
                 
@@ -1897,17 +1900,17 @@ EOF
         for i in "${ADDR[@]}"; do
             missing_nodes+=("$i")
         done
-        
-        echo -e "\n${yellow}将为以下shadowsocks节点添加中国大陆禁止规则：${plain}"
+    
+    echo -e "\n${yellow}将为以下shadowsocks节点添加中国大陆禁止规则：${plain}"
         for node_info in "${missing_nodes[@]}"; do
-            IFS=':' read -r node_id api_host <<< "$node_info"
-            echo -e "  ${cyan}- 节点ID: ${node_id}, ApiHost: ${api_host}${plain}"
-        done
-        
-        read -rp "确认为这些shadowsocks节点添加中国大陆禁止规则？(y/n): " confirm
-        if [[ "$confirm" != [Yy] ]]; then
-            echo -e "${yellow}操作已取消${plain}"
-            return 0
+        IFS=':' read -r node_id api_host <<< "$node_info"
+        echo -e "  ${cyan}- 节点ID: ${node_id}, ApiHost: ${api_host}${plain}"
+    done
+    
+    read -rp "确认为这些shadowsocks节点添加中国大陆禁止规则？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
         fi
         
         # 更新ss_nodes数组为缺少规则的节点
