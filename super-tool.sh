@@ -4299,12 +4299,84 @@ show_manual_setup() {
 setup_ssh_key_login() {
     echo -e "${green}=== 设置SSH密钥登录 ===${plain}"
     
-    local public_key="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDr/1TncOySPMDS4gfQXcknFmqRspdKESWtFxYBRzHUFxt2i/7qoPY+FG3YqWnm3wawtUvMKHRtflvCEGhO1fZl5ZqLBxSILfWX9IDlPcaL7K9DN7ZVtLqOcQb6ADzp2Q8ZW4n+b6qOjlBsxZr34sYcz5hzdsEz+0Zr3YbRvQlFYjaivQdi4nYigMcFru2TKqOz/Wxuhg1i4HFTKthzuDSNzLjL0zu6pSlglB2oLVJJrUt8ARswrqEoylk5+7aLPIEoz2sLm7liA9e7N7ITnZZNVYt9ZZ6jeeVpTVnR2qZV6SnqL3/iGIWtY50u7l+dbF/jN0b7XSuKGNN7dLGck0GAbVa4yp/dC5Bk7zqVALDaQRLkNjJ/r+kKBkZM9f6iHMYnSNBvNou5lAh4ZhP1scXuN6OhWHqrUxyG0esq8CEIEmPUEyMwnaA69FMqnrBT8RQR0I3enFxMOY2E9zc/2BJsZo6CMD2nPqXMffNZ9I4zBHesdYf9vy8uyl7wBQC87wlNzm1dX3s1TXYm4LXrFHeTHyddG2q+fmOq4y6tS0tDmGp7Q2Dccic6LV1IDM9lgUdlxAm90+C9A8Ew8MzrSjLdSzTouORhNr6tTGF7lubg1BtjtElcVXF3Jf4KX52I/wkXo3iszGUF4rmZpxHinWJTLCwvvX26YkrHGWWb3473gw== shuhao1024@gmail.com"
+    echo -e "${yellow}请选择SSH密钥设置方式：${plain}"
+    echo -e "  ${cyan}1.${plain} 手动输入SSH公钥"
+    echo -e "  ${cyan}2.${plain} 从URL下载公钥 (如GitHub: https://github.com/username.keys)"
+    echo -e "  ${cyan}3.${plain} 从本地文件读取公钥"
+    echo -e "  ${cyan}4.${plain} 使用预设的公钥"
+    
+    local choice
+    read -rp "请选择 [1-4]: " choice
+    
+    local public_key=""
+    
+    case $choice in
+        1)
+            echo -e "${yellow}请输入完整的SSH公钥：${plain}"
+            echo -e "${cyan}格式示例: ssh-rsa AAAAB3NzaC1yc2E... user@hostname${plain}"
+            read -rp "公钥: " public_key
+            ;;
+        2)
+            echo -e "${yellow}请输入公钥URL：${plain}"
+            echo -e "${cyan}示例: https://github.com/username.keys${plain}"
+            read -rp "URL: " key_url
+            if [[ -n "$key_url" ]]; then
+                echo -e "${yellow}正在下载公钥...${plain}"
+                public_key=$(curl -fsSL "$key_url" 2>/dev/null | head -1)
+                if [[ -z "$public_key" ]]; then
+                    echo -e "${red}无法从URL下载公钥${plain}"
+                    return 1
+                fi
+                echo -e "${green}下载成功！${plain}"
+            fi
+            ;;
+        3)
+            echo -e "${yellow}请输入公钥文件路径：${plain}"
+            read -rp "文件路径: " key_file
+            if [[ -f "$key_file" ]]; then
+                public_key=$(cat "$key_file" | head -1)
+                echo -e "${green}读取文件成功！${plain}"
+            else
+                echo -e "${red}文件不存在: $key_file${plain}"
+                return 1
+            fi
+            ;;
+        4)
+            public_key="ssh-rsa AAAAB3NzaC1yc2EAAAADAQABAAACAQDr/1TncOySPMDS4gfQXcknFmqRspdKESWtFxYBRzHUFxt2i/7qoPY+FG3YqWnm3wawtUvMKHRtflvCEGhO1fZl5ZqLBxSILfWX9IDlPcaL7K9DN7ZVtLqOcQb6ADzp2Q8ZW4n+b6qOjlBsxZr34sYcz5hzdsEz+0Zr3YbRvQlFYjaivQdi4nYigMcFru2TKqOz/Wxuhg1i4HFTKthzuDSNzLjL0zu6pSlglB2oLVJJrUt8ARswrqEoylk5+7aLPIEoz2sLm7liA9e7N7ITnZZNVYt9ZZ6jeeVpTVnR2qZV6SnqL3/iGIWtY50u7l+dbF/jN0b7XSuKGNN7dLGck0GAbVa4yp/dC5Bk7zqVALDaQRLkNjJ/r+kKBkZM9f6iHMYnSNBvNou5lAh4ZhP1scXuN6OhWHqrUxyG0esq8CEIEmPUEyMwnaA69FMqnrBT8RQR0I3enFxMOY2E9zc/2BJsZo6CMD2nPqXMffNZ9I4zBHesdYf9vy8uyl7wBQC87wlNzm1dX3s1TXYm4LXrFHeTHyddG2q+fmOq4y6tS0tDmGp7Q2Dccic6LV1IDM9lgUdlxAm90+C9A8Ew8MzrSjLdSzTouORhNr6tTGF7lubg1BtjtElcVXF3Jf4KX52I/wkXo3iszGUF4rmZpxHinWJTLCwvvX26YkrHGWWb3473gw== shuhao1024@gmail.com"
+            echo -e "${yellow}使用预设公钥${plain}"
+            ;;
+        *)
+            echo -e "${red}无效选择${plain}"
+            return 1
+            ;;
+    esac
+    
+    # 验证公钥格式
+    if [[ -z "$public_key" ]]; then
+        echo -e "${red}公钥不能为空${plain}"
+        return 1
+    fi
+    
+    # 基本公钥格式验证
+    if [[ ! "$public_key" =~ ^(ssh-rsa|ssh-ed25519|ecdsa-sha2-) ]]; then
+        echo -e "${red}错误：公钥格式不正确${plain}"
+        echo -e "${yellow}公钥应该以 ssh-rsa、ssh-ed25519 或 ecdsa-sha2- 开头${plain}"
+        return 1
+    fi
+    
+    # 提取公钥注释（用户信息）
+    local key_comment=$(echo "$public_key" | awk '{print $3}')
+    if [[ -z "$key_comment" ]]; then
+        key_comment="imported-key"
+    fi
+    
     local ssh_dir="$HOME/.ssh"
     local authorized_keys="$ssh_dir/authorized_keys"
     
     echo -e "${yellow}将要添加的公钥：${plain}"
-    echo -e "${cyan}$public_key${plain}"
+    echo -e "${cyan}类型: $(echo "$public_key" | awk '{print $1}')${plain}"
+    echo -e "${cyan}注释: $key_comment${plain}"
+    echo -e "${cyan}公钥指纹: $(echo "$public_key" | ssh-keygen -lf - 2>/dev/null | awk '{print $2}' || echo "无法计算")${plain}"
     
     read -rp "确认添加此SSH公钥？(y/n): " confirm
     if [[ "$confirm" != [Yy] ]]; then
@@ -4317,6 +4389,8 @@ setup_ssh_key_login() {
         echo -e "${yellow}创建 $ssh_dir 目录...${plain}"
         mkdir -p "$ssh_dir"
         chmod 700 "$ssh_dir"
+        # 确保目录所有者正确
+        chown "$USER:$(id -gn)" "$ssh_dir" 2>/dev/null || true
     fi
     
     # 备份现有的authorized_keys文件
@@ -4326,20 +4400,76 @@ setup_ssh_key_login() {
         cp "$authorized_keys" "$backup_file"
     fi
     
-    # 检查密钥是否已存在
-    if [[ -f "$authorized_keys" ]] && grep -q "shuhao1024@gmail.com" "$authorized_keys"; then
-        echo -e "${yellow}检测到该密钥已存在，将更新...${plain}"
-        grep -v "shuhao1024@gmail.com" "$authorized_keys" > "${authorized_keys}.tmp" || true
+    # 检查密钥是否已存在（比较公钥的第二字段）
+    local key_data=$(echo "$public_key" | awk '{print $2}')
+    if [[ -f "$authorized_keys" ]] && grep -q "$key_data" "$authorized_keys"; then
+        echo -e "${yellow}检测到相同的公钥已存在，将更新...${plain}"
+        # 删除现有的相同公钥
+        grep -v "$key_data" "$authorized_keys" > "${authorized_keys}.tmp" 2>/dev/null || true
         mv "${authorized_keys}.tmp" "$authorized_keys"
     fi
     
     # 添加新密钥
     echo "$public_key" >> "$authorized_keys"
     chmod 600 "$authorized_keys"
+    # 确保文件所有者正确
+    chown "$USER:$(id -gn)" "$authorized_keys" 2>/dev/null || true
     
     echo -e "${green}✓ SSH公钥已成功添加！${plain}"
     echo -e "${yellow}授权密钥文件：${plain}${cyan}$authorized_keys${plain}"
     echo -e "${yellow}文件权限：${plain}${cyan}$(ls -la $authorized_keys)${plain}"
+    
+    # 验证和优化SSH配置
+    echo -e "\n${yellow}检查和优化SSH服务配置...${plain}"
+    local sshd_config="/etc/ssh/sshd_config"
+    local config_changed=false
+    
+    if [[ -f "$sshd_config" ]]; then
+        # 备份SSH配置
+        local sshd_backup="${sshd_config}.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "$sshd_config" "$sshd_backup"
+        echo -e "${yellow}备份SSH配置到：${plain}${cyan}$sshd_backup${plain}"
+        
+        # 确保启用公钥认证
+        if ! grep -q "^PubkeyAuthentication yes" "$sshd_config"; then
+            echo -e "${yellow}启用公钥认证...${plain}"
+            if grep -q "^PubkeyAuthentication" "$sshd_config"; then
+                sed -i 's/^PubkeyAuthentication.*/PubkeyAuthentication yes/' "$sshd_config"
+            else
+                echo "PubkeyAuthentication yes" >> "$sshd_config"
+            fi
+            config_changed=true
+        fi
+        
+        # 确保指定正确的授权密钥文件路径
+        if ! grep -q "^AuthorizedKeysFile.*authorized_keys" "$sshd_config"; then
+            echo -e "${yellow}设置授权密钥文件路径...${plain}"
+            if grep -q "^AuthorizedKeysFile" "$sshd_config"; then
+                sed -i 's|^AuthorizedKeysFile.*|AuthorizedKeysFile .ssh/authorized_keys|' "$sshd_config"
+            else
+                echo "AuthorizedKeysFile .ssh/authorized_keys" >> "$sshd_config"
+            fi
+            config_changed=true
+        fi
+        
+        # 验证SSH配置
+        if sshd -t; then
+            echo -e "${green}✓ SSH配置验证通过${plain}"
+            
+            # 如果配置有变化，重启SSH服务
+            if [[ "$config_changed" == true ]]; then
+                echo -e "${yellow}重启SSH服务以应用配置更改...${plain}"
+                if systemctl restart ssh 2>/dev/null || systemctl restart sshd 2>/dev/null; then
+                    echo -e "${green}✓ SSH服务已重启${plain}"
+                else
+                    echo -e "${red}⚠ SSH服务重启失败，但密钥已添加${plain}"
+                fi
+            fi
+        else
+            echo -e "${red}✗ SSH配置验证失败，恢复备份${plain}"
+            cp "$sshd_backup" "$sshd_config"
+        fi
+    fi
     
     # 验证SSH服务状态
     echo -e "\n${yellow}检查SSH服务状态...${plain}"
@@ -4354,8 +4484,23 @@ setup_ssh_key_login() {
         fi
     fi
     
+    # 显示连接测试建议
+    echo -e "\n${green}=== SSH密钥配置完成 ===${plain}"
+    echo -e "${cyan}测试连接建议：${plain}"
+    echo -e "  1. ${yellow}保持当前SSH连接不要断开${plain}"
+    echo -e "  2. ${yellow}开启新的终端测试密钥登录${plain}"
+    echo -e "  3. ${yellow}确认密钥登录成功后再考虑禁用密码登录${plain}"
+    
+    # 获取服务器IP和端口信息
+    local server_ip=$(hostname -I | awk '{print $1}' 2>/dev/null || echo "your-server-ip")
+    local ssh_port=$(grep "^Port " "$sshd_config" 2>/dev/null | awk '{print $2}' || echo "22")
+    
+    echo -e "\n${cyan}测试命令示例：${plain}"
+    echo -e "  ${yellow}ssh -i /path/to/private_key -p $ssh_port $USER@$server_ip${plain}"
+    
     echo -e "\n${cyan}提示：${plain}"
     echo -e "  - 现在可以使用密钥登录服务器"
+    echo -e "  - 私钥文件权限应设为 600 (chmod 600 private_key)"
     echo -e "  - 建议测试密钥登录成功后再禁用密码登录"
     echo -e "  - 请确保保存好对应的私钥文件"
 }
