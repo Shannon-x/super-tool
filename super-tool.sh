@@ -18,9 +18,11 @@
 #   功能 13: 修改主机名与登录信息
 #   功能 14: 更新脚本到最新版本
 #   功能 15: 服务器安全设置
+#   功能 16: 删除脚本并卸载isufe快捷命令
+#   功能 17: 防止谷歌送中
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: v4.7
+#   版本: v4.8
 #====================================================
 
 # 颜色定义
@@ -4009,7 +4011,7 @@ modify_hostname_and_motd() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v4.6)${plain}
+  ${green}多功能服务器工具脚本 (v4.8)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
       ${yellow}1.${plain} 端口转发管理 (设置/查看规则)
@@ -4028,8 +4030,9 @@ show_menu() {
   ${yellow}14.${plain} 更新脚本到最新版本
   ${yellow}15.${plain} 服务器安全设置 (SSH/Fail2ban/更新)
   ${yellow}16.${plain} 删除脚本并卸载isufe快捷命令
+  ${yellow}17.${plain} 防止谷歌送中
   ---"
-    read -rp "请输入选项 [0-16]: " choice
+    read -rp "请输入选项 [0-17]: " choice
     
     case $choice in
         0)
@@ -4107,8 +4110,11 @@ show_menu() {
         16)
             uninstall_script
             ;;
+        17)
+            google_protection_menu
+            ;;
         *)
-            echo -e "${red}无效的选项，请输入 0-16${plain}"
+            echo -e "${red}无效的选项，请输入 0-17${plain}"
             ;;
     esac
 }
@@ -5062,6 +5068,407 @@ main() {
     fi
     
     show_menu
+}
+
+# 防止谷歌送中菜单
+google_protection_menu() {
+    echo -e "\n${green}=== 防止谷歌送中 ===${plain}"
+    echo -e "  ${cyan}1.${plain} 添加防止送中的措施"
+    echo -e "  ${cyan}2.${plain} 取消送中的安全措施"
+    read -rp "请选择操作 [1-2]: " google_choice
+    
+    case $google_choice in
+        1)
+            add_google_protection
+            ;;
+        2)
+            remove_google_protection
+            ;;
+        *)
+            echo -e "${red}无效的选择${plain}"
+            ;;
+    esac
+}
+
+# 解析socks链接
+parse_socks_url() {
+    local socks_url="$1"
+    
+    # 检查是否是socks5://格式
+    if [[ "$socks_url" =~ ^socks5://([^:]+):([^@]+)@([^:]+):([0-9]+)$ ]]; then
+        SOCKS_USER="${BASH_REMATCH[1]}"
+        SOCKS_PASS="${BASH_REMATCH[2]}"
+        SOCKS_HOST="${BASH_REMATCH[3]}"
+        SOCKS_PORT="${BASH_REMATCH[4]}"
+        return 0
+    # 检查是否是user:pass@host:port格式
+    elif [[ "$socks_url" =~ ^([^:]+):([^@]+)@([^:]+):([0-9]+)$ ]]; then
+        SOCKS_USER="${BASH_REMATCH[1]}"
+        SOCKS_PASS="${BASH_REMATCH[2]}"
+        SOCKS_HOST="${BASH_REMATCH[3]}"
+        SOCKS_PORT="${BASH_REMATCH[4]}"
+        return 0
+    else
+        return 1
+    fi
+}
+
+# 添加防止谷歌送中的措施
+add_google_protection() {
+    echo -e "\n${green}=== 添加防止谷歌送中的措施 ===${plain}"
+    
+    # 检查必要的配置文件是否存在
+    if [[ ! -f "/etc/V2bX/custom_outbound.json" ]]; then
+        echo -e "${red}错误：/etc/V2bX/custom_outbound.json 文件不存在${plain}"
+        return 1
+    fi
+    
+    if [[ ! -f "/etc/V2bX/route.json" ]]; then
+        echo -e "${red}错误：/etc/V2bX/route.json 文件不存在${plain}"
+        return 1
+    fi
+    
+    # 获取socks链接
+    echo -e "${yellow}请输入socks代理链接：${plain}"
+    echo -e "${cyan}支持格式：${plain}"
+    echo -e "  1. socks5://user:pass@host:port"
+    echo -e "  2. user:pass@host:port"
+    echo -e "${cyan}示例：${plain}socks5://xLx8QrYjrX:CDFU7QE75x@london3xui.848999.xyz:50010"
+    read -rp "请输入socks链接: " socks_input
+    
+    if [[ -z "$socks_input" ]]; then
+        echo -e "${red}错误：socks链接不能为空${plain}"
+        return 1
+    fi
+    
+    # 解析socks链接
+    if ! parse_socks_url "$socks_input"; then
+        echo -e "${red}错误：无效的socks链接格式${plain}"
+        return 1
+    fi
+    
+    echo -e "${green}解析成功：${plain}"
+    echo -e "  主机: $SOCKS_HOST"
+    echo -e "  端口: $SOCKS_PORT"
+    echo -e "  用户: $SOCKS_USER"
+    echo -e "  密码: $SOCKS_PASS"
+    
+    # 备份原始文件
+    cp /etc/V2bX/custom_outbound.json /etc/V2bX/custom_outbound.json.bak
+    cp /etc/V2bX/route.json /etc/V2bX/route.json.bak
+    
+    # 修改custom_outbound.json，添加google_out出站
+    echo -e "\n${blue}正在修改 custom_outbound.json...${plain}"
+    
+    # 读取现有配置
+    local current_config=$(cat /etc/V2bX/custom_outbound.json)
+    
+    # 检查是否已经存在google_out
+    if echo "$current_config" | grep -q '"tag": "google_out"'; then
+        echo -e "${yellow}警告：google_out 出站已存在，将更新配置${plain}"
+        # 删除现有的google_out配置
+        current_config=$(echo "$current_config" | jq 'del(.[] | select(.tag == "google_out"))')
+    fi
+    
+    # 创建新的google_out配置
+    local google_out_config=$(cat <<EOF
+{
+    "tag": "google_out",
+    "protocol": "socks",
+    "settings": {
+        "servers": [
+            {
+                "address": "$SOCKS_HOST",
+                "port": $SOCKS_PORT,
+                "users": [
+                    {
+                        "user": "$SOCKS_USER",
+                        "pass": "$SOCKS_PASS"
+                    }
+                ]
+            }
+        ]
+    }
+}
+EOF
+)
+    
+    # 添加新配置到数组中
+    local new_config=$(echo "$current_config" | jq ". += [$google_out_config]" --argjson google_out_config "$google_out_config")
+    
+    # 写入文件
+    echo "$new_config" > /etc/V2bX/custom_outbound.json
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "${green}✓ custom_outbound.json 更新成功${plain}"
+    else
+        echo -e "${red}✗ custom_outbound.json 更新失败${plain}"
+        return 1
+    fi
+    
+    # 修改route.json，添加谷歌路由规则
+    echo -e "\n${blue}正在修改 route.json...${plain}"
+    
+    local route_config=$(cat /etc/V2bX/route.json)
+    
+    # 检查是否已经存在谷歌路由规则
+    if echo "$route_config" | grep -q '"domain": \["geosite:google"\]'; then
+        echo -e "${yellow}警告：谷歌路由规则已存在，将更新配置${plain}"
+        # 删除现有的谷歌路由规则
+        route_config=$(echo "$route_config" | jq '.rules = (.rules | map(select(.domain != ["geosite:google"])))')
+    fi
+    
+    # 创建新的谷歌路由规则
+    local google_rule=$(cat <<EOF
+{
+    "type": "field",
+    "domain": ["geosite:google"],
+    "outboundTag": "google_out"
+}
+EOF
+)
+    
+    # 将谷歌规则插入到rules数组的开头（优先级更高）
+    local new_route_config=$(echo "$route_config" | jq --argjson google_rule "$google_rule" '.rules = [$google_rule] + .rules')
+    
+    # 写入文件
+    echo "$new_route_config" > /etc/V2bX/route.json
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "${green}✓ route.json 更新成功${plain}"
+    else
+        echo -e "${red}✗ route.json 更新失败${plain}"
+        return 1
+    fi
+    
+    # 修改所有hy2开头的yaml配置文件
+    echo -e "\n${blue}正在修改 Hysteria2 配置文件...${plain}"
+    
+    local hy2_files=$(find /etc/V2bX -name "hy2*.yaml" 2>/dev/null)
+    
+    if [[ -z "$hy2_files" ]]; then
+        echo -e "${yellow}警告：未找到 hy2*.yaml 配置文件${plain}"
+    else
+        for hy2_file in $hy2_files; do
+            echo -e "  处理文件: $hy2_file"
+            
+            # 备份原文件
+            cp "$hy2_file" "${hy2_file}.bak"
+            
+            # 创建新的配置内容
+            cat > "$hy2_file" <<EOF
+quic:
+  initStreamReceiveWindow: 8388608
+  maxStreamReceiveWindow: 8388608
+  initConnReceiveWindow: 20971520
+  maxConnReceiveWindow: 20971520
+  maxIdleTimeout: 30s
+  maxIncomingStreams: 1024
+  disablePathMTUDiscovery: false
+
+ignoreClientBandwidth: false
+disableUDP: false
+udpIdleTimeout: 60s
+
+resolver:
+  type: system
+
+# --- 出站配置 ---
+outbounds:
+  # 这是新增的谷歌专用出站
+  - name: google_out
+    type: socks5
+    socks5:
+      addr: $SOCKS_HOST:$SOCKS_PORT
+      username: $SOCKS_USER
+      password: $SOCKS_PASS
+  # 这是原来的默认 socks5 出站
+  - name: socks5_out
+    type: socks5
+    socks5:
+      addr: 23.142.16.246:12734
+      username: vxj7qzplne
+      password: mu4rtok938
+  # 这是直连出站
+  - name: direct
+    type: direct
+
+# --- ACL 规则 ---
+acl:
+  inline:
+    # 规则1：局域网和私有地址，直连
+    - "direct(geosite:private)"
+    # 规则2：所有 Google 相关的域名，走 google_out 专用代理 (此行为已修改)
+    - "google_out(geosite:google)"
+    # 规则3：其他所有未匹配到的流量，全部走 socks5_out 代理
+    - "socks5_out(all)"
+
+  # GeoIP 和 GeoSite 文件路径
+  geoip: geoip.dat
+  geosite: geosite.dat
+
+# --- 伪装配置保持不变 ---
+masquerade:
+  type: 404
+EOF
+            
+            if [[ $? -eq 0 ]]; then
+                echo -e "${green}    ✓ $hy2_file 更新成功${plain}"
+            else
+                echo -e "${red}    ✗ $hy2_file 更新失败${plain}"
+            fi
+        done
+    fi
+    
+    # 重启V2bX服务
+    echo -e "\n${blue}正在重启 V2bX 服务...${plain}"
+    systemctl restart v2bx
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "${green}✓ V2bX 服务重启成功${plain}"
+    else
+        echo -e "${red}✗ V2bX 服务重启失败${plain}"
+        echo -e "${yellow}请手动运行: systemctl restart v2bx${plain}"
+    fi
+    
+    echo -e "\n${green}=== 防止谷歌送中措施添加完成 ===${plain}"
+    echo -e "${cyan}已完成以下操作：${plain}"
+    echo -e "  1. 在 custom_outbound.json 中添加了 google_out 出站"
+    echo -e "  2. 在 route.json 中添加了谷歌域名路由规则"
+    echo -e "  3. 更新了所有 hy2*.yaml 配置文件"
+    echo -e "  4. 重启了 V2bX 服务"
+    echo -e "\n${yellow}注意：${plain}所有谷歌相关域名现在将通过专用代理访问"
+}
+
+# 取消防止谷歌送中的措施
+remove_google_protection() {
+    echo -e "\n${green}=== 取消防止谷歌送中的措施 ===${plain}"
+    
+    # 检查必要的配置文件是否存在
+    if [[ ! -f "/etc/V2bX/custom_outbound.json" ]]; then
+        echo -e "${red}错误：/etc/V2bX/custom_outbound.json 文件不存在${plain}"
+        return 1
+    fi
+    
+    if [[ ! -f "/etc/V2bX/route.json" ]]; then
+        echo -e "${red}错误：/etc/V2bX/route.json 文件不存在${plain}"
+        return 1
+    fi
+    
+    # 确认操作
+    echo -e "${yellow}此操作将：${plain}"
+    echo -e "  1. 从 custom_outbound.json 中删除 google_out 出站"
+    echo -e "  2. 从 route.json 中删除谷歌域名路由规则"
+    echo -e "  3. 恢复所有 hy2*.yaml 配置文件的备份"
+    echo -e "  4. 重启 V2bX 服务"
+    
+    read -rp "确定要继续吗？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 修改custom_outbound.json，删除google_out出站
+    echo -e "\n${blue}正在修改 custom_outbound.json...${plain}"
+    
+    local current_config=$(cat /etc/V2bX/custom_outbound.json)
+    
+    # 检查是否存在google_out
+    if echo "$current_config" | grep -q '"tag": "google_out"'; then
+        # 删除google_out配置
+        local new_config=$(echo "$current_config" | jq 'del(.[] | select(.tag == "google_out"))')
+        echo "$new_config" > /etc/V2bX/custom_outbound.json
+        
+        if [[ $? -eq 0 ]]; then
+            echo -e "${green}✓ 已从 custom_outbound.json 中删除 google_out${plain}"
+        else
+            echo -e "${red}✗ 删除 google_out 失败${plain}"
+            return 1
+        fi
+    else
+        echo -e "${yellow}警告：custom_outbound.json 中未找到 google_out 配置${plain}"
+    fi
+    
+    # 修改route.json，删除谷歌路由规则
+    echo -e "\n${blue}正在修改 route.json...${plain}"
+    
+    local route_config=$(cat /etc/V2bX/route.json)
+    
+    # 检查是否存在谷歌路由规则
+    if echo "$route_config" | grep -q '"domain": \["geosite:google"\]'; then
+        # 删除谷歌路由规则
+        local new_route_config=$(echo "$route_config" | jq '.rules = (.rules | map(select(.domain != ["geosite:google"])))')
+        echo "$new_route_config" > /etc/V2bX/route.json
+        
+        if [[ $? -eq 0 ]]; then
+            echo -e "${green}✓ 已从 route.json 中删除谷歌路由规则${plain}"
+        else
+            echo -e "${red}✗ 删除谷歌路由规则失败${plain}"
+            return 1
+        fi
+    else
+        echo -e "${yellow}警告：route.json 中未找到谷歌路由规则${plain}"
+    fi
+    
+    # 恢复所有hy2开头的yaml配置文件
+    echo -e "\n${blue}正在恢复 Hysteria2 配置文件...${plain}"
+    
+    local hy2_files=$(find /etc/V2bX -name "hy2*.yaml" 2>/dev/null)
+    
+    if [[ -z "$hy2_files" ]]; then
+        echo -e "${yellow}警告：未找到 hy2*.yaml 配置文件${plain}"
+    else
+        for hy2_file in $hy2_files; do
+            local backup_file="${hy2_file}.bak"
+            
+            if [[ -f "$backup_file" ]]; then
+                echo -e "  恢复文件: $hy2_file"
+                cp "$backup_file" "$hy2_file"
+                
+                if [[ $? -eq 0 ]]; then
+                    echo -e "${green}    ✓ $hy2_file 恢复成功${plain}"
+                    # 删除备份文件
+                    rm -f "$backup_file"
+                else
+                    echo -e "${red}    ✗ $hy2_file 恢复失败${plain}"
+                fi
+            else
+                echo -e "${yellow}    警告：未找到 $hy2_file 的备份文件${plain}"
+            fi
+        done
+    fi
+    
+    # 恢复其他配置文件的备份
+    echo -e "\n${blue}正在恢复配置文件备份...${plain}"
+    
+    if [[ -f "/etc/V2bX/custom_outbound.json.bak" ]]; then
+        echo -e "  恢复 custom_outbound.json 备份"
+        rm -f "/etc/V2bX/custom_outbound.json.bak"
+    fi
+    
+    if [[ -f "/etc/V2bX/route.json.bak" ]]; then
+        echo -e "  恢复 route.json 备份"
+        rm -f "/etc/V2bX/route.json.bak"
+    fi
+    
+    # 重启V2bX服务
+    echo -e "\n${blue}正在重启 V2bX 服务...${plain}"
+    systemctl restart v2bx
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "${green}✓ V2bX 服务重启成功${plain}"
+    else
+        echo -e "${red}✗ V2bX 服务重启失败${plain}"
+        echo -e "${yellow}请手动运行: systemctl restart v2bx${plain}"
+    fi
+    
+    echo -e "\n${green}=== 防止谷歌送中措施已取消 ===${plain}"
+    echo -e "${cyan}已完成以下操作：${plain}"
+    echo -e "  1. 从 custom_outbound.json 中删除了 google_out 出站"
+    echo -e "  2. 从 route.json 中删除了谷歌域名路由规则"
+    echo -e "  3. 恢复了所有 hy2*.yaml 配置文件"
+    echo -e "  4. 重启了 V2bX 服务"
+    echo -e "\n${yellow}注意：${plain}谷歌相关域名现在将使用默认路由规则"
 }
 
 # 删除脚本并卸载isufe快捷命令
