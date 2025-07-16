@@ -5964,18 +5964,35 @@ try:
     with open(config_file, 'r') as f:
         config = json.load(f)
     
+    # 显示Cores配置
+    cores = config.get('Cores', [])
+    if cores:
+        print(f"  可用核心: {len(cores)} 个")
+        for i, core in enumerate(cores, 1):
+            core_type = core.get('Type', 'N/A')
+            print(f"    {i}. {core_type}")
+    else:
+        print("  警告: 未找到核心配置")
+    
+    # 显示节点配置
     nodes = config.get('Nodes', [])
     if not nodes:
         print("  暂无节点")
         sys.exit(0)
     
-    print(f"  共有 {len(nodes)} 个节点:")
+    print(f"\n  共有 {len(nodes)} 个节点:")
     for i, node in enumerate(nodes, 1):
         node_id = node.get('NodeID', 'N/A')
         node_type = node.get('NodeType', 'N/A')
         api_host = node.get('ApiHost', 'N/A')
         core = node.get('Core', 'N/A')
-        print(f"  {i}. ID: {node_id}, 类型: {node_type}, 核心: {core}, 主机: {api_host}")
+        
+        # 对于hysteria2节点，显示额外信息
+        if core == 'hysteria2':
+            cert_domain = node.get('CertConfig', {}).get('CertDomain', 'N/A')
+            print(f"  {i}. ID: {node_id}, 类型: {node_type}, 核心: {core}, 主机: {api_host}, 证书域名: {cert_domain}")
+        else:
+            print(f"  {i}. ID: {node_id}, 类型: {node_type}, 核心: {core}, 主机: {api_host}")
         
 except Exception as e:
     print(f"读取配置文件时出错: {e}")
@@ -6147,7 +6164,29 @@ def add_hysteria2_node():
         with open(config_file, 'r') as f:
             config = json.load(f)
         
-        # 创建新节点配置
+        # 确保Cores配置存在且包含hysteria2
+        if 'Cores' not in config:
+            config['Cores'] = []
+        
+        # 检查是否已有hysteria2核心配置
+        has_hysteria2_core = False
+        for core in config['Cores']:
+            if core.get('Type') == 'hysteria2':
+                has_hysteria2_core = True
+                break
+        
+        # 如果没有hysteria2核心配置，添加一个
+        if not has_hysteria2_core:
+            hysteria2_core = {
+                "Type": "hysteria2",
+                "Log": {
+                    "Level": "error"
+                }
+            }
+            config['Cores'].append(hysteria2_core)
+            print("✅ 已添加hysteria2核心配置")
+        
+        # 创建新节点配置（完全按照用户提供的模板）
         new_node = {
             "Core": "hysteria2",
             "ApiHost": "https://www.isufe.me",
@@ -6208,6 +6247,9 @@ EOF
         echo -e "  - 证书域名: ${cyan}${cert_domain}${plain}"
         echo -e "  - 证书模式: ${cyan}dns（自动DNS签名）${plain}"
         echo -e "  - 提供商: ${cyan}cloudflare${plain}"
+        echo -e "\n${yellow}重要提示：${plain}"
+        echo -e "  - 已确保配置文件包含hysteria2核心配置"
+        echo -e "  - 节点配置完全按照标准模板生成"
         return 0
     else
         echo -e "${red}❌ 添加节点失败${plain}"
