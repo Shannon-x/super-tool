@@ -4151,12 +4151,12 @@ EOF
     echo -e "${cyan}正在启动Claude Code...${plain}"
     echo -e "${green}Claude Code已安装并配置完成！${plain}"
     echo -e "${yellow}您可以通过以下命令启动Claude Code：${plain}"
-    echo -e "${cyan}claude-code${plain}"
+    echo -e "${cyan}claude code${plain}"
     
     read -rp "是否现在启动Claude Code？(y/n): " start_claude
     if [[ "$start_claude" == [Yy] ]]; then
         echo -e "${cyan}正在启动Claude Code...${plain}"
-        claude-code
+        claude code
     fi
 }
 
