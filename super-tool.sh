@@ -5359,7 +5359,7 @@ remove_google_protection() {
     echo -e "${yellow}此操作将：${plain}"
     echo -e "  1. 从 custom_outbound.json 中删除 google_out 出站"
     echo -e "  2. 从 route.json 中删除谷歌域名路由规则"
-    echo -e "  3. 恢复所有 hy2*.yaml 配置文件的备份"
+    echo -e "  3. 从所有 hy2*.yaml 配置文件中删除谷歌相关配置（保留其他配置）"
     echo -e "  4. 重启 V2bX 服务"
     
     read -rp "确定要继续吗？(y/n): " confirm
@@ -5410,8 +5410,8 @@ remove_google_protection() {
         echo -e "${yellow}警告：route.json 中未找到谷歌路由规则${plain}"
     fi
     
-    # 恢复所有hy2开头的yaml配置文件
-    echo -e "\n${blue}正在恢复 Hysteria2 配置文件...${plain}"
+    # 修改所有hy2开头的yaml配置文件，只删除谷歌相关配置
+    echo -e "\n${blue}正在修改 Hysteria2 配置文件...${plain}"
     
     local hy2_files=$(find /etc/V2bX -name "hy2*.yaml" 2>/dev/null)
     
@@ -5419,21 +5419,33 @@ remove_google_protection() {
         echo -e "${yellow}警告：未找到 hy2*.yaml 配置文件${plain}"
     else
         for hy2_file in $hy2_files; do
-            local backup_file="${hy2_file}.bak"
+            echo -e "  处理文件: $hy2_file"
             
-            if [[ -f "$backup_file" ]]; then
-                echo -e "  恢复文件: $hy2_file"
-                cp "$backup_file" "$hy2_file"
+            # 检查文件是否存在谷歌相关配置
+            if grep -q "google_out" "$hy2_file"; then
+                # 创建临时文件来存储修改后的内容
+                local temp_file=$(mktemp)
                 
-                if [[ $? -eq 0 ]]; then
-                    echo -e "${green}    ✓ $hy2_file 恢复成功${plain}"
-                    # 删除备份文件
-                    rm -f "$backup_file"
+                # 删除google_out出站配置和相关ACL规则
+                sed '/# 这是新增的谷歌专用出站/,/password: /d' "$hy2_file" | \
+                sed '/# 规则2：所有 Google 相关的域名，走 google_out 专用代理/d' | \
+                sed '/- "google_out(geosite:google)"/d' > "$temp_file"
+                
+                # 将修改后的内容写回原文件
+                if mv "$temp_file" "$hy2_file"; then
+                    echo -e "${green}    ✓ $hy2_file 中的谷歌配置已删除${plain}"
                 else
-                    echo -e "${red}    ✗ $hy2_file 恢复失败${plain}"
+                    echo -e "${red}    ✗ $hy2_file 修改失败${plain}"
+                    rm -f "$temp_file"
                 fi
             else
-                echo -e "${yellow}    警告：未找到 $hy2_file 的备份文件${plain}"
+                echo -e "${yellow}    警告：$hy2_file 中未找到谷歌配置${plain}"
+            fi
+            
+            # 删除备份文件
+            local backup_file="${hy2_file}.bak"
+            if [[ -f "$backup_file" ]]; then
+                rm -f "$backup_file"
             fi
         done
     fi
@@ -5466,9 +5478,9 @@ remove_google_protection() {
     echo -e "${cyan}已完成以下操作：${plain}"
     echo -e "  1. 从 custom_outbound.json 中删除了 google_out 出站"
     echo -e "  2. 从 route.json 中删除了谷歌域名路由规则"
-    echo -e "  3. 恢复了所有 hy2*.yaml 配置文件"
+    echo -e "  3. 从所有 hy2*.yaml 配置文件中删除了谷歌相关配置"
     echo -e "  4. 重启了 V2bX 服务"
-    echo -e "\n${yellow}注意：${plain}谷歌相关域名现在将使用默认路由规则"
+    echo -e "\n${yellow}注意：${plain}谷歌相关域名现在将使用默认路由规则，其他socks配置保持不变"
 }
 
 # 删除脚本并卸载isufe快捷命令
