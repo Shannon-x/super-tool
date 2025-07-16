@@ -1770,12 +1770,12 @@ check_and_block_ss_china() {
     
     echo -e "${yellow}正在检查shadowsocks节点和中国大陆禁止规则...${plain}"
     
-    # 使用Python处理整个逻辑
-    python3 << 'EOF'
+    # 先检查节点状态
+    local check_result
+    check_result=$(python3 << 'EOF'
 import json
 import sys
 import os
-from datetime import datetime
 
 def main():
     config_file = "/etc/V2bX/config.json"
@@ -1860,30 +1860,121 @@ def main():
         
         if not missing_rules:
             print("\n✅ 所有SS节点都已配置中国大陆禁止规则")
+            print("STATUS:ALL_CONFIGURED")
             return True
         
         print(f"\n⚠️  缺少中国大陆禁止规则的SS节点 ({len(missing_rules)} 个):")
         for i, (node_id, api_host) in enumerate(missing_rules, 1):
             print(f"  {i}. 节点ID: {node_id}, ApiHost: {api_host}")
         
-        # 询问用户是否添加规则
-        print(f"\n将为以上 {len(missing_rules)} 个shadowsocks节点添加中国大陆禁止规则")
-        confirm = input("确认添加规则？(y/n): ").strip().lower()
-        if confirm != 'y':
-            print("操作已取消")
-            return True
+        # 输出需要添加规则的节点信息
+        print("STATUS:NEED_RULES")
+        for node_id, api_host in missing_rules:
+            print(f"MISSING_NODE:{node_id}:{api_host}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"处理时出错: {e}")
+        return False
+
+if __name__ == "__main__":
+    success = main()
+    sys.exit(0 if success else 1)
+EOF
+    )
+    
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}检查shadowsocks节点状态失败${plain}"
+        return 1
+    fi
+    
+    echo -e "${cyan}$check_result${plain}" | grep -v "^STATUS:\|^MISSING_NODE:"
+    
+    # 检查状态
+    if [[ "$check_result" == *"STATUS:ALL_CONFIGURED"* ]]; then
+        echo -e "\n${green}✅ 所有shadowsocks节点都已正确配置中国大陆禁止规则${plain}"
+        echo -e "${yellow}无需添加新规则。${plain}"
+        return 0
+    fi
+    
+    if [[ "$check_result" == *"STATUS:NEED_RULES"* ]]; then
+        # 提取缺少规则的节点
+        local missing_nodes=()
+        while IFS= read -r line; do
+            if [[ "$line" =~ ^MISSING_NODE:(.+):(.+)$ ]]; then
+                missing_nodes+=("${BASH_REMATCH[1]}:${BASH_REMATCH[2]}")
+            fi
+        done <<< "$check_result"
+        
+        if [[ ${#missing_nodes[@]} -eq 0 ]]; then
+            echo -e "${red}未找到需要添加规则的节点${plain}"
+            return 1
+        fi
+        
+        echo -e "\n${yellow}将为以下shadowsocks节点添加中国大陆禁止规则：${plain}"
+        for node_info in "${missing_nodes[@]}"; do
+            IFS=':' read -r node_id api_host <<< "$node_info"
+            echo -e "  ${cyan}- 节点ID: ${node_id}, ApiHost: ${api_host}${plain}"
+        done
+        
+        read -rp "确认为这些shadowsocks节点添加中国大陆禁止规则？(y/n): " confirm
+        if [[ "$confirm" != [Yy] ]]; then
+            echo -e "${yellow}操作已取消${plain}"
+            return 0
+        fi
+        
+        # 构建节点映射字符串
+        local node_mappings=""
+        for node_info in "${missing_nodes[@]}"; do
+            IFS=':' read -r node_id api_host <<< "$node_info"
+            if [[ -n "$node_mappings" ]]; then
+                node_mappings="${node_mappings},${node_id}:${api_host}"
+            else
+                node_mappings="${node_id}:${api_host}"
+            fi
+        done
         
         # 备份路由配置文件
-        backup_file = f"{route_file}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
-        with open(route_file, 'r') as src, open(backup_file, 'w') as dst:
-            dst.write(src.read())
-        print(f"已备份路由配置文件到：{backup_file}")
+        local backup_file="/etc/V2bX/route.json.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "/etc/V2bX/route.json" "$backup_file"
+        echo -e "${green}已备份路由配置文件到：${plain}${backup_file}"
+        
+        echo -e "\n${yellow}正在添加中国大陆禁止规则...${plain}"
+        
+        # 使用Python添加规则
+        python3 << EOF
+import json
+import sys
+from datetime import datetime
+
+def add_rules():
+    config_file = "/etc/V2bX/config.json"
+    route_file = "/etc/V2bX/route.json"
+    mappings_str = "$node_mappings"
+    
+    try:
+        # 解析节点映射
+        node_mappings = {}
+        if mappings_str:
+            for mapping in mappings_str.split(','):
+                if mapping.strip():
+                    parts = mapping.strip().split(':')
+                    if len(parts) == 2:
+                        node_id, api_host = parts
+                        node_mappings[node_id] = api_host
+        
+        # 读取现有路由配置
+        with open(route_file, 'r') as f:
+            route_config = json.load(f)
+        
+        if 'rules' not in route_config:
+            route_config['rules'] = []
         
         # 添加中国大陆禁止规则
-        print("\n正在添加中国大陆禁止规则...")
         added_count = 0
         
-        for node_id, api_host in missing_rules:
+        for node_id, api_host in node_mappings.items():
             # 生成inboundTag，格式为 [api_host]-shadowsocks:node_id
             inbound_tag = f"[{api_host}]-shadowsocks:{node_id}"
             
@@ -1906,7 +1997,7 @@ def main():
             json.dump(route_config, f, indent=2, ensure_ascii=False)
         
         print(f"\n✅ 处理完成:")
-        print(f"总shadowsocks节点数: {len(ss_nodes)}")
+        print(f"总shadowsocks节点数: {len(node_mappings)}")
         print(f"新增中国大陆禁止规则数: {added_count}")
         print(f"当前总规则数: {len(route_config['rules'])}")
         
@@ -1917,23 +2008,30 @@ def main():
         return False
 
 if __name__ == "__main__":
-    success = main()
+    success = add_rules()
     sys.exit(0 if success else 1)
 EOF
-    
-    if [[ $? -eq 0 ]]; then
-        echo -e "\n${green}=== shadowsocks节点中国大陆禁止规则处理完成 ===${plain}"
-        echo -e "${yellow}配置文件已更新：${plain}${cyan}${route_file}${plain}"
-        echo -e "${yellow}规则效果：${plain}"
-        echo -e "  - ${cyan}来自中国大陆的IP将无法直接连接shadowsocks节点${plain}"
-        echo -e "  - ${cyan}有效防止国内用户直接访问节点IP${plain}"
-        echo -e "  - ${cyan}提高节点的安全性和隐蔽性${plain}"
-        echo -e "\n${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
-        echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
+        
+        if [[ $? -eq 0 ]]; then
+            echo -e "\n${green}=== shadowsocks节点中国大陆禁止规则添加完成 ===${plain}"
+        else
+            echo -e "${red}添加中国大陆禁止规则失败${plain}"
+            echo -e "${yellow}可以使用备份文件恢复：${plain}${cyan}cp ${backup_file} /etc/V2bX/route.json${plain}"
+            return 1
+        fi
     else
-        echo -e "${red}处理shadowsocks节点中国大陆禁止规则失败${plain}"
+        echo -e "${red}未找到需要处理的shadowsocks节点${plain}"
         return 1
     fi
+    
+    echo -e "\n${green}=== shadowsocks节点中国大陆禁止规则处理完成 ===${plain}"
+    echo -e "${yellow}配置文件已更新：${plain}${cyan}/etc/V2bX/route.json${plain}"
+    echo -e "${yellow}规则效果：${plain}"
+    echo -e "  - ${cyan}来自中国大陆的IP将无法直接连接shadowsocks节点${plain}"
+    echo -e "  - ${cyan}有效防止国内用户直接访问节点IP${plain}"
+    echo -e "  - ${cyan}提高节点的安全性和隐蔽性${plain}"
+    echo -e "\n${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
+    echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
 }
 
 ############################################################
