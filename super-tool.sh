@@ -1355,6 +1355,7 @@ fix_inbound_tags() {
     python3 << 'EOF'
 import json
 import sys
+import os
 
 config_file = "/etc/V2bX/config.json"
 route_file = "/etc/V2bX/route.json"
@@ -1376,9 +1377,20 @@ try:
     
     print(f"找到 {len(node_host_mapping)} 个节点的主机信息")
     
+    # 检查route.json文件是否存在且不为空
+    if not os.path.exists(route_file) or os.path.getsize(route_file) == 0:
+        print(f"错误：route.json 文件不存在或为空")
+        print(f"请先使用功能17选项3恢复默认配置，或检查文件内容")
+        sys.exit(1)
+    
     # 读取路由配置文件
     with open(route_file, 'r') as f:
-        route_config = json.load(f)
+        file_content = f.read().strip()
+        if not file_content:
+            print(f"错误：route.json 文件为空")
+            print(f"请先使用功能17选项3恢复默认配置")
+            sys.exit(1)
+        route_config = json.loads(file_content)
     
     if 'rules' not in route_config:
         print("路由配置文件中未找到 rules 字段")
@@ -1498,6 +1510,7 @@ remove_payment_blocks() {
 import json
 import re
 import sys
+import os
 
 route_file = "$route_file"
 
@@ -1522,7 +1535,7 @@ def is_payment_rule(domain_rule):
             return True
     
     # 额外检查一些特定模式
-payment_patterns = [
+    payment_patterns = [
         r'\.bank\.',
         r'visa',
         r'mycard',
@@ -1543,9 +1556,20 @@ payment_patterns = [
     return False
 
 try:
+    # 检查route.json文件是否存在且不为空
+    if not os.path.exists(route_file) or os.path.getsize(route_file) == 0:
+        print(f"错误：route.json 文件不存在或为空")
+        print(f"请先使用功能17选项3恢复默认配置，或检查文件内容")
+        sys.exit(1)
+    
     # 读取配置文件
     with open(route_file, 'r') as f:
-        config = json.load(f)
+        file_content = f.read().strip()
+        if not file_content:
+            print(f"错误：route.json 文件为空")
+            print(f"请先使用功能17选项3恢复默认配置")
+            sys.exit(1)
+        config = json.loads(file_content)
     
     if 'rules' not in config:
         print("配置文件中未找到 rules 字段")
@@ -1635,6 +1659,7 @@ show_payment_block_status() {
     python3 << EOF
 import json
 import re
+import os
 
 route_file = "$route_file"
 
@@ -1680,8 +1705,19 @@ def is_payment_rule(domain_rule):
     return False
 
 try:
+    # 检查route.json文件是否存在且不为空
+    if not os.path.exists(route_file) or os.path.getsize(route_file) == 0:
+        print(f"错误：route.json 文件不存在或为空")
+        print(f"请先使用功能17选项3恢复默认配置，或检查文件内容")
+        exit(1)
+    
     with open(route_file, 'r') as f:
-        config = json.load(f)
+        file_content = f.read().strip()
+        if not file_content:
+            print(f"错误：route.json 文件为空")
+            print(f"请先使用功能17选项3恢复默认配置")
+            exit(1)
+        config = json.loads(file_content)
     
     if 'rules' not in config:
         print("配置文件中未找到 rules 字段")
@@ -1801,6 +1837,7 @@ EOF
     rules_status=$(python3 << 'EOF'
 import json
 import sys
+import os
 
 config_file = "/etc/V2bX/config.json"
 route_file = "/etc/V2bX/route.json"
@@ -1819,9 +1856,20 @@ try:
                 api_host = node.get('ApiHost', '')
                 ss_nodes[node_id] = api_host
     
+    # 检查route.json文件是否存在且不为空
+    if not os.path.exists(route_file) or os.path.getsize(route_file) == 0:
+        print(f"错误：route.json 文件不存在或为空")
+        print(f"请先使用功能17选项3恢复默认配置，或检查文件内容")
+        sys.exit(1)
+    
     # 读取路由规则
     with open(route_file, 'r') as f:
-        route_config = json.load(f)
+        file_content = f.read().strip()
+        if not file_content:
+            print(f"错误：route.json 文件为空")
+            print(f"请先使用功能17选项3恢复默认配置")
+            sys.exit(1)
+        route_config = json.loads(file_content)
     
     # 检查现有的中国大陆禁止规则
     existing_block_rules = {}
