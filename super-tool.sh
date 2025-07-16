@@ -17,7 +17,7 @@
 #   功能 12: DD系统重装 (使用reinstall脚本)
 #   功能 13: 修改主机名与登录信息
 #   功能 14: 更新脚本到最新版本
-#   功能 15: 服务器安全设置
+#   功能 15: 服务器基本设置
 #   功能 16: 删除脚本并卸载isufe快捷命令
 #   功能 17: 防止谷歌送中
 #
@@ -4030,7 +4030,7 @@ show_menu() {
   ${yellow}12.${plain} DD系统重装 (使用reinstall脚本)
   ${yellow}13.${plain} 修改主机名与登录信息
   ${yellow}14.${plain} 更新脚本到最新版本
-  ${yellow}15.${plain} 服务器安全设置 (SSH/Fail2ban/更新)
+  ${yellow}15.${plain} 服务器基本设置 (SSH/Fail2ban/更新/Swap)
   ${yellow}16.${plain} 删除脚本并卸载isufe快捷命令
   ${yellow}17.${plain} 防止谷歌送中
   ${yellow}18.${plain} 增加V2bX节点
@@ -5027,15 +5027,194 @@ EOF
     echo -e "  - ${yellow}如果无法连接，请使用其他方式访问服务器恢复配置${plain}"
 }
 
-# 服务器安全设置主菜单
+# 6. 设置Swap交换内存
+setup_swap_memory() {
+    echo -e "${green}=== 设置Swap交换内存 ===${plain}"
+    
+    # 检查当前swap状态
+    echo -e "${yellow}当前Swap状态：${plain}"
+    local current_swap=$(free -h | grep "Swap:" | awk '{print $2}')
+    local current_used=$(free -h | grep "Swap:" | awk '{print $3}')
+    
+    if [[ "$current_swap" == "0B" ]]; then
+        echo -e "  ${red}当前无Swap交换内存${plain}"
+    else
+        echo -e "  ${cyan}总大小: $current_swap${plain}"
+        echo -e "  ${cyan}已使用: $current_used${plain}"
+        echo -e "  ${cyan}详细信息:${plain}"
+        free -h | grep -E "Mem:|Swap:"
+    fi
+    
+    # 检查现有swap文件
+    echo -e "\n${yellow}检查现有swap文件...${plain}"
+    if [[ -f /swapfile ]]; then
+        local swap_size=$(ls -lh /swapfile | awk '{print $5}')
+        echo -e "  ${yellow}发现现有swap文件: /swapfile (${swap_size})${plain}"
+        
+        read -rp "是否要删除现有swap文件并重新创建？(y/n): " recreate_swap
+        if [[ "$recreate_swap" == [Yy] ]]; then
+            echo -e "${yellow}正在删除现有swap文件...${plain}"
+            swapoff /swapfile 2>/dev/null || true
+            rm -f /swapfile
+            # 从fstab中移除
+            sed -i '/\/swapfile/d' /etc/fstab
+            echo -e "${green}✓ 现有swap文件已删除${plain}"
+        else
+            echo -e "${yellow}保留现有swap文件，操作已取消${plain}"
+            return 0
+        fi
+    fi
+    
+    # 询问swap大小
+    echo -e "\n${yellow}请输入要创建的Swap大小（单位：GB）：${plain}"
+    echo -e "${cyan}建议配置：${plain}"
+    echo -e "  - 内存 <= 2GB: 建议 2-4GB Swap"
+    echo -e "  - 内存 2-8GB: 建议 2-4GB Swap"
+    echo -e "  - 内存 > 8GB: 建议 2GB Swap"
+    echo -e "  - 通常设置为内存的1-2倍即可"
+    
+    local swap_size_gb
+    while true; do
+        read -rp "请输入Swap大小（GB，1-32）: " swap_size_gb
+        
+        if [[ "$swap_size_gb" =~ ^[0-9]+$ ]] && [[ "$swap_size_gb" -ge 1 ]] && [[ "$swap_size_gb" -le 32 ]]; then
+            break
+        else
+            echo -e "${red}请输入有效的数字（1-32）${plain}"
+        fi
+    done
+    
+    # 检查磁盘空间
+    echo -e "\n${yellow}检查磁盘空间...${plain}"
+    local available_space=$(df / | tail -1 | awk '{print $4}')
+    local required_space=$((swap_size_gb * 1024 * 1024))  # 转换为KB
+    
+    if [[ $available_space -lt $required_space ]]; then
+        echo -e "${red}错误：磁盘空间不足${plain}"
+        echo -e "  需要: ${cyan}${swap_size_gb}GB${plain}"
+        echo -e "  可用: ${cyan}$((available_space / 1024 / 1024))GB${plain}"
+        return 1
+    fi
+    
+    echo -e "${green}✓ 磁盘空间充足${plain}"
+    
+    # 确认创建
+    echo -e "\n${yellow}=== 确认Swap配置 ===${plain}"
+    echo -e "  ${cyan}Swap大小: ${swap_size_gb}GB${plain}"
+    echo -e "  ${cyan}Swap文件: /swapfile${plain}"
+    echo -e "  ${cyan}持久化: 是（自动加入/etc/fstab）${plain}"
+    
+    read -rp "确认创建Swap交换内存？(y/n): " confirm_create
+    if [[ "$confirm_create" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 创建swap文件
+    echo -e "\n${green}开始创建Swap交换内存...${plain}"
+    
+    echo -e "${yellow}1. 创建swap文件 (${swap_size_gb}GB)...${plain}"
+    if dd if=/dev/zero of=/swapfile bs=1G count=$swap_size_gb status=progress; then
+        echo -e "${green}✓ swap文件创建成功${plain}"
+    else
+        echo -e "${red}✗ swap文件创建失败${plain}"
+        return 1
+    fi
+    
+    # 设置权限
+    echo -e "${yellow}2. 设置文件权限...${plain}"
+    chmod 600 /swapfile
+    echo -e "${green}✓ 文件权限设置完成${plain}"
+    
+    # 格式化为swap
+    echo -e "${yellow}3. 格式化为swap格式...${plain}"
+    if mkswap /swapfile; then
+        echo -e "${green}✓ swap格式化完成${plain}"
+    else
+        echo -e "${red}✗ swap格式化失败${plain}"
+        rm -f /swapfile
+        return 1
+    fi
+    
+    # 启用swap
+    echo -e "${yellow}4. 启用swap...${plain}"
+    if swapon /swapfile; then
+        echo -e "${green}✓ swap已启用${plain}"
+    else
+        echo -e "${red}✗ swap启用失败${plain}"
+        rm -f /swapfile
+        return 1
+    fi
+    
+    # 添加到fstab实现持久化
+    echo -e "${yellow}5. 配置开机自动挂载...${plain}"
+    if ! grep -q "/swapfile" /etc/fstab; then
+        echo "/swapfile none swap sw 0 0" >> /etc/fstab
+        echo -e "${green}✓ 已添加到/etc/fstab，开机自动挂载${plain}"
+    else
+        echo -e "${yellow}⚠ /etc/fstab中已存在swap配置${plain}"
+    fi
+    
+    # 优化swap设置
+    echo -e "${yellow}6. 优化swap设置...${plain}"
+    
+    # 设置swappiness (推荐值10，减少对swap的依赖)
+    echo "vm.swappiness=10" >> /etc/sysctl.conf
+    sysctl vm.swappiness=10
+    
+    # 设置vfs_cache_pressure (推荐值50，平衡缓存回收)
+    echo "vm.vfs_cache_pressure=50" >> /etc/sysctl.conf
+    sysctl vm.vfs_cache_pressure=50
+    
+    echo -e "${green}✓ swap优化设置完成${plain}"
+    
+    # 验证配置
+    echo -e "\n${green}=== Swap创建完成 ===${plain}"
+    echo -e "${yellow}验证结果：${plain}"
+    
+    # 显示swap状态
+    echo -e "${cyan}Swap状态：${plain}"
+    free -h | grep -E "Mem:|Swap:"
+    
+    # 显示swap详细信息
+    echo -e "\n${cyan}Swap详细信息：${plain}"
+    swapon --show
+    
+    # 显示系统参数
+    echo -e "\n${cyan}系统参数：${plain}"
+    echo -e "  swappiness: $(cat /proc/sys/vm/swappiness)"
+    echo -e "  vfs_cache_pressure: $(cat /proc/sys/vm/vfs_cache_pressure)"
+    
+    # 显示fstab配置
+    echo -e "\n${cyan}持久化配置：${plain}"
+    grep swap /etc/fstab
+    
+    echo -e "\n${green}✅ Swap交换内存设置完成！${plain}"
+    echo -e "${yellow}配置摘要：${plain}"
+    echo -e "  ✓ Swap大小: ${cyan}${swap_size_gb}GB${plain}"
+    echo -e "  ✓ Swap文件: ${cyan}/swapfile${plain}"
+    echo -e "  ✓ 开机自动挂载: ${green}已配置${plain}"
+    echo -e "  ✓ 系统优化: ${green}已完成${plain}"
+    echo -e "  ✓ swappiness: ${cyan}10${plain} (降低swap使用频率)"
+    echo -e "  ✓ vfs_cache_pressure: ${cyan}50${plain} (平衡缓存回收)"
+    
+    echo -e "\n${cyan}提示：${plain}"
+    echo -e "  - Swap已立即生效，无需重启"
+    echo -e "  - 重启后会自动挂载"
+    echo -e "  - 如需删除swap：swapoff /swapfile && rm /swapfile"
+    echo -e "  - 监控swap使用：free -h 或 htop"
+}
+
+# 服务器基本设置主菜单
 server_security_menu() {
-    echo -e "\n${yellow}服务器安全设置：${plain}"
+    echo -e "\n${yellow}服务器基本设置：${plain}"
     echo -e "  ${cyan}1.${plain} 添加SSH密钥登录"
     echo -e "  ${cyan}2.${plain} 禁止密码登录"
     echo -e "  ${cyan}3.${plain} 安装Fail2ban并配置（600小时封禁）"
     echo -e "  ${cyan}4.${plain} 更新系统包"
     echo -e "  ${cyan}5.${plain} 更改SSH登录端口"
-    read -rp "请选择操作 [1-5]: " security_choice
+    echo -e "  ${cyan}6.${plain} 设置Swap交换内存"
+    read -rp "请选择操作 [1-6]: " security_choice
     
     case $security_choice in
         1)
@@ -5052,6 +5231,9 @@ server_security_menu() {
             ;;
         5)
             change_ssh_port
+            ;;
+        6)
+            setup_swap_memory
             ;;
         *)
             echo -e "${red}无效的选择${plain}"
