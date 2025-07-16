@@ -16,10 +16,12 @@
 #   功能 11: 安装3x-ui面板
 #   功能 12: DD系统重装 (使用reinstall脚本)
 #   功能 13: 修改主机名与登录信息
-#   功能 14: 更新脚本到最新版本
+#   功能 14: 安装Claude Code (Node.js + 配置)
 #   功能 15: 服务器基本设置
-#   功能 16: 删除脚本并卸载isufe快捷命令
-#   功能 17: 防止谷歌送中
+#   功能 16: 防止谷歌送中
+#   功能 17: 增加V2bX节点
+#   功能 18: 更新脚本到最新版本
+#   功能 19: 删除脚本并卸载isufe快捷命令
 #
 #   作者: Gemini (基于用户需求优化)
 #   版本: v4.9
@@ -4008,6 +4010,108 @@ modify_hostname_and_motd() {
 }
 
 ############################################################
+# 安装Claude Code
+############################################################
+
+install_claude_code() {
+    echo -e "${green}=== 安装Claude Code ===${plain}"
+    
+    # 步骤1：安装Node.js和npm
+    echo -e "${yellow}步骤1：安装Node.js和npm${plain}"
+    
+    # 检测操作系统
+    if [[ "$release" == "centos" ]]; then
+        # CentOS/RHEL
+        if ! command -v node &> /dev/null; then
+            echo -e "${cyan}正在安装Node.js和npm...${plain}"
+            curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash -
+            yum install -y nodejs
+        else
+            echo -e "${green}Node.js已安装，版本: $(node --version)${plain}"
+        fi
+    elif [[ "$release" == "ubuntu" ]]; then
+        # Ubuntu/Debian
+        if ! command -v node &> /dev/null; then
+            echo -e "${cyan}正在安装Node.js和npm...${plain}"
+            curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+            apt-get install -y nodejs
+        else
+            echo -e "${green}Node.js已安装，版本: $(node --version)${plain}"
+        fi
+    else
+        echo -e "${red}不支持的操作系统${plain}"
+        return 1
+    fi
+    
+    # 验证安装
+    if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
+        echo -e "${red}Node.js或npm安装失败${plain}"
+        return 1
+    fi
+    
+    echo -e "${green}Node.js版本: $(node --version)${plain}"
+    echo -e "${green}npm版本: $(npm --version)${plain}"
+    
+    # 步骤2：安装Claude Code
+    echo -e "\n${yellow}步骤2：安装Claude Code${plain}"
+    echo -e "${cyan}正在安装@anthropic-ai/claude-code...${plain}"
+    
+    if npm install -g @anthropic-ai/claude-code; then
+        echo -e "${green}Claude Code安装成功${plain}"
+    else
+        echo -e "${red}Claude Code安装失败${plain}"
+        return 1
+    fi
+    
+    # 步骤3：创建配置文件
+    echo -e "\n${yellow}步骤3：创建配置文件${plain}"
+    
+    # 创建配置目录
+    echo -e "${cyan}创建配置目录...${plain}"
+    mkdir -p ~/.claude
+    
+    # 创建完整的配置文件
+    echo -e "${cyan}创建配置文件...${plain}"
+    cat > ~/.claude/settings.json << 'EOF'
+{
+  "env": {
+    "ANTHROPIC_API_KEY": "test",
+    "ANTHROPIC_BASE_URL": "https://claudeapi.848999.xyz"
+  },
+  "permissions": {
+    "allow": [],
+    "deny": []
+  },
+  "apiKeyHelper": "echo 'test'",
+  "model": "opus"
+}
+EOF
+    
+    # 验证配置文件
+    echo -e "\n${yellow}验证配置文件：${plain}"
+    if [[ -f ~/.claude/settings.json ]]; then
+        echo -e "${green}配置文件创建成功，内容如下：${plain}"
+        cat ~/.claude/settings.json
+    else
+        echo -e "${red}配置文件创建失败${plain}"
+        return 1
+    fi
+    
+    # 启动Claude Code
+    echo -e "\n${yellow}启动Claude Code${plain}"
+    echo -e "${cyan}正在启动Claude Code...${plain}"
+    echo -e "${green}Claude Code已安装并配置完成！${plain}"
+    echo -e "${yellow}您可以通过以下命令启动Claude Code：${plain}"
+    echo -e "${cyan}claude-code${plain}"
+    
+    read -rp "是否现在启动Claude Code？(y/n): " start_claude
+    if [[ "$start_claude" == [Yy] ]]; then
+        echo -e "${cyan}正在启动Claude Code...${plain}"
+        claude-code
+    fi
+}
+
+############################################################
 # 主菜单和脚本执行逻辑
 ############################################################
 
@@ -4029,13 +4133,14 @@ show_menu() {
   ${yellow}11.${plain} 安装3x-ui面板
   ${yellow}12.${plain} DD系统重装 (使用reinstall脚本)
   ${yellow}13.${plain} 修改主机名与登录信息
-  ${yellow}14.${plain} 更新脚本到最新版本
+  ${yellow}14.${plain} 安装Claude Code
   ${yellow}15.${plain} 服务器基本设置 (SSH/Fail2ban/更新/Swap)
-  ${yellow}16.${plain} 删除脚本并卸载isufe快捷命令
-  ${yellow}17.${plain} 防止谷歌送中
-  ${yellow}18.${plain} 增加V2bX节点
+  ${yellow}16.${plain} 防止谷歌送中
+  ${yellow}17.${plain} 增加V2bX节点
+  ${yellow}18.${plain} 更新脚本到最新版本
+  ${yellow}19.${plain} 删除脚本并卸载isufe快捷命令
   ---"
-    read -rp "请输入选项 [0-18]: " choice
+    read -rp "请输入选项 [0-19]: " choice
     
     case $choice in
         0)
@@ -4105,22 +4210,25 @@ show_menu() {
             modify_hostname_and_motd
             ;;
         14)
-            update_script
+            install_claude_code
             ;;
         15)
             server_security_menu
             ;;
         16)
-            uninstall_script
-            ;;
-        17)
             google_protection_menu
             ;;
-        18)
+        17)
             add_v2bx_node
             ;;
+        18)
+            update_script
+            ;;
+        19)
+            uninstall_script
+            ;;
         *)
-            echo -e "${red}无效的选项，请输入 0-18${plain}"
+            echo -e "${red}无效的选项，请输入 0-19${plain}"
             ;;
     esac
 }
