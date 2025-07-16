@@ -22,7 +22,7 @@
 #   功能 17: 防止谷歌送中
 #
 #   作者: Gemini (基于用户需求优化)
-#   版本: v4.8
+#   版本: v4.9
 #====================================================
 
 # 颜色定义
@@ -4013,7 +4013,7 @@ modify_hostname_and_motd() {
 
 show_menu() {
     echo -e "
-  ${green}多功能服务器工具脚本 (v4.8)${plain}
+  ${green}多功能服务器工具脚本 (v4.9)${plain}
   ---
   ${yellow}0.${plain} 退出脚本
       ${yellow}1.${plain} 端口转发管理 (设置/查看规则)
@@ -5854,64 +5854,100 @@ add_v2bx_node() {
         return 1
     fi
     
-    # 显示当前节点信息
-    show_current_nodes
+    local added_nodes=0
+    local continue_adding=true
     
-    # 获取节点信息
-    echo -e "\n${yellow}请输入新节点信息：${plain}"
-    
-    local node_id
-    while true; do
-        read -rp "节点ID（数字）: " node_id
-        if [[ "$node_id" =~ ^[0-9]+$ ]]; then
-            # 检查节点ID是否已存在
-            if check_node_id_exists "$node_id"; then
-                echo -e "${red}错误：节点ID $node_id 已存在，请选择其他ID${plain}"
-                continue
+    while $continue_adding; do
+        # 显示当前节点信息
+        show_current_nodes
+        
+        # 获取节点信息
+        echo -e "\n${yellow}请输入新节点信息：${plain}"
+        
+        local node_id
+        while true; do
+            read -rp "节点ID（数字）: " node_id
+            if [[ "$node_id" =~ ^[0-9]+$ ]]; then
+                # 检查节点ID是否已存在
+                if check_node_id_exists "$node_id"; then
+                    echo -e "${red}错误：节点ID $node_id 已存在，请选择其他ID${plain}"
+                    continue
+                fi
+                break
+            else
+                echo -e "${red}错误：请输入有效的数字${plain}"
             fi
-            break
-        else
-            echo -e "${red}错误：请输入有效的数字${plain}"
+        done
+        
+        # 选择节点类型
+        echo -e "\n${yellow}请选择节点类型：${plain}"
+        echo -e "  ${cyan}1.${plain} vless"
+        echo -e "  ${cyan}2.${plain} shadowsocks"
+        echo -e "  ${cyan}3.${plain} hysteria2"
+        
+        local node_type
+        while true; do
+            read -rp "请选择节点类型 [1-3]: " type_choice
+            case $type_choice in
+                1)
+                    node_type="vless"
+                    break
+                    ;;
+                2)
+                    node_type="shadowsocks"
+                    break
+                    ;;
+                3)
+                    node_type="hysteria2"
+                    break
+                    ;;
+                *)
+                    echo -e "${red}无效选择，请输入1-3${plain}"
+                    ;;
+            esac
+        done
+        
+        # 根据节点类型添加节点
+        local add_success=false
+        case $node_type in
+            "vless"|"shadowsocks")
+                if add_xray_node "$node_id" "$node_type"; then
+                    add_success=true
+                fi
+                ;;
+            "hysteria2")
+                if add_hysteria2_node "$node_id"; then
+                    add_success=true
+                fi
+                ;;
+        esac
+        
+        # 如果添加成功，增加计数器
+        if $add_success; then
+            ((added_nodes++))
+        fi
+        
+        # 询问是否继续添加节点
+        echo -e "\n${yellow}是否继续添加更多节点？${plain}"
+        read -rp "继续添加 (y/n): " continue_choice
+        if [[ "$continue_choice" != [Yy] ]]; then
+            continue_adding=false
         fi
     done
     
-    # 选择节点类型
-    echo -e "\n${yellow}请选择节点类型：${plain}"
-    echo -e "  ${cyan}1.${plain} vless"
-    echo -e "  ${cyan}2.${plain} shadowsocks"
-    echo -e "  ${cyan}3.${plain} hysteria2"
+    # 显示添加结果总结
+    echo -e "\n${green}=== 节点添加完成 ===${plain}"
+    echo -e "${yellow}本次共添加了 ${cyan}${added_nodes}${plain} ${yellow}个节点${plain}"
     
-    local node_type
-    while true; do
-        read -rp "请选择节点类型 [1-3]: " type_choice
-        case $type_choice in
-            1)
-                node_type="vless"
-                break
-                ;;
-            2)
-                node_type="shadowsocks"
-                break
-                ;;
-            3)
-                node_type="hysteria2"
-                break
-                ;;
-            *)
-                echo -e "${red}无效选择，请输入1-3${plain}"
-                ;;
-        esac
-    done
-    
-    # 根据节点类型添加节点
-    case $node_type in
-        "vless"|"shadowsocks")
-            add_xray_node "$node_id" "$node_type"
-            ;;
-        "hysteria2")
-            add_hysteria2_node "$node_id"
-            ;;
-    esac
+    if [[ $added_nodes -gt 0 ]]; then
+        echo -e "\n${yellow}重要提示：${plain}"
+        echo -e "  ${cyan}请重启V2bX服务使所有新节点生效：${plain}"
+        echo -e "  ${green}systemctl restart V2bX${plain}"
+        echo -e "\n${yellow}建议操作：${plain}"
+        echo -e "  1. 检查服务状态：${cyan}systemctl status V2bX${plain}"
+        echo -e "  2. 查看服务日志：${cyan}journalctl -u V2bX -f${plain}"
+        echo -e "  3. 验证节点配置：${cyan}检查面板中的节点状态${plain}"
+    fi
 }
 
 # 显示当前节点信息
@@ -6063,11 +6099,10 @@ if __name__ == "__main__":
 EOF
     
     if [[ $? -eq 0 ]]; then
-        echo -e "\n${green}=== ${node_type} 节点添加完成 ===${plain}"
-        echo -e "${yellow}请重启V2bX服务使配置生效：${plain}"
-        echo -e "${cyan}systemctl restart V2bX${plain}"
+        echo -e "\n${green}✅ ${node_type} 节点添加成功（ID: ${node_id}）${plain}"
+        return 0
     else
-        echo -e "${red}添加节点失败${plain}"
+        echo -e "${red}❌ 添加节点失败${plain}"
         echo -e "${yellow}可以使用备份文件恢复：${plain}"
         echo -e "${cyan}cp ${backup_file} /etc/V2bX/config.json${plain}"
         return 1
@@ -6168,15 +6203,14 @@ if __name__ == "__main__":
 EOF
     
     if [[ $? -eq 0 ]]; then
-        echo -e "\n${green}=== hysteria2 节点添加完成 ===${plain}"
+        echo -e "\n${green}✅ hysteria2 节点添加成功（ID: ${node_id}）${plain}"
         echo -e "${yellow}证书配置信息：${plain}"
         echo -e "  - 证书域名: ${cyan}${cert_domain}${plain}"
         echo -e "  - 证书模式: ${cyan}dns（自动DNS签名）${plain}"
         echo -e "  - 提供商: ${cyan}cloudflare${plain}"
-        echo -e "\n${yellow}请重启V2bX服务使配置生效：${plain}"
-        echo -e "${cyan}systemctl restart V2bX${plain}"
+        return 0
     else
-        echo -e "${red}添加节点失败${plain}"
+        echo -e "${red}❌ 添加节点失败${plain}"
         echo -e "${yellow}可以使用备份文件恢复：${plain}"
         echo -e "${cyan}cp ${backup_file} /etc/V2bX/config.json${plain}"
         return 1
