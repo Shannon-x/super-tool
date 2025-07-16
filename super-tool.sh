@@ -1768,304 +1768,161 @@ check_and_block_ss_china() {
         return 1
     fi
     
-    echo -e "${yellow}正在扫描shadowsocks节点...${plain}"
+    echo -e "${yellow}正在检查shadowsocks节点和中国大陆禁止规则...${plain}"
     
-    # 使用Python扫描shadowsocks节点
-    local ss_nodes_info
-    ss_nodes_info=$(python3 << 'EOF'
-import json
-import sys
-
-config_file = "/etc/V2bX/config.json"
-
-try:
-    with open(config_file, 'r') as f:
-        config = json.load(f)
-    
-    ss_nodes = []
-    if 'Nodes' in config:
-        for node in config['Nodes']:
-            if node.get('NodeType') == 'shadowsocks':
-                ss_nodes.append({
-                    'NodeID': node.get('NodeID'),
-                    'ApiHost': node.get('ApiHost', ''),
-                    'NodeType': node.get('NodeType')
-                })
-    
-    if ss_nodes:
-        print(f"找到 {len(ss_nodes)} 个shadowsocks节点:")
-        for i, node in enumerate(ss_nodes, 1):
-            # 保留完整的ApiHost，因为面板在inboundTag中使用完整的URL
-            api_host = node['ApiHost']
-            print(f"{i}. NodeID: {node['NodeID']}, ApiHost: {api_host}")
-            print(f"SS_NODE:{node['NodeID']}:{api_host}")
-    else:
-        print("未找到shadowsocks节点")
-        sys.exit(1)
-        
-except Exception as e:
-    print(f"扫描节点失败: {e}")
-    sys.exit(1)
-EOF
-    )
-    
-    if [[ $? -ne 0 ]]; then
-        echo -e "${red}未找到shadowsocks节点或扫描失败${plain}"
-        return 1
-    fi
-    
-    # 显示找到的节点
-    echo -e "${cyan}$ss_nodes_info${plain}" | grep -v "^SS_NODE:"
-    
-    # 提取节点信息
-    local ss_nodes=()
-    while IFS= read -r line; do
-        if [[ "$line" =~ ^SS_NODE:(.+):(.+)$ ]]; then
-            ss_nodes+=("${BASH_REMATCH[1]}:${BASH_REMATCH[2]}")
-        fi
-    done <<< "$ss_nodes_info"
-    
-    if [[ ${#ss_nodes[@]} -eq 0 ]]; then
-        echo -e "${red}未找到有效的shadowsocks节点${plain}"
-        return 1
-    fi
-    
-    echo -e "\n${yellow}正在检查现有的中国大陆禁止规则...${plain}"
-    
-    # 检查现有规则状态
-    local rules_status
-    rules_status=$(python3 << 'EOF'
+    # 使用Python处理整个逻辑
+    python3 << 'EOF'
 import json
 import sys
 import os
+from datetime import datetime
 
-config_file = "/etc/V2bX/config.json"
-route_file = "/etc/V2bX/route.json"
-
-try:
-    # 读取shadowsocks节点信息
-    with open(config_file, 'r') as f:
-        config = json.load(f)
+def main():
+    config_file = "/etc/V2bX/config.json"
+    route_file = "/etc/V2bX/route.json"
     
-    ss_nodes = {}
-    if 'Nodes' in config:
-        for node in config['Nodes']:
-            if node.get('NodeType') == 'shadowsocks':
-                node_id = str(node.get('NodeID'))
-                # 保留完整的ApiHost，因为面板在inboundTag中使用完整的URL
-                api_host = node.get('ApiHost', '')
-                ss_nodes[node_id] = api_host
-    
-    # 检查route.json文件是否存在且不为空
-    if not os.path.exists(route_file) or os.path.getsize(route_file) == 0:
-        print(f"错误：route.json 文件不存在或为空")
-        print(f"请先使用功能17选项3恢复默认配置，或检查文件内容")
-        sys.exit(1)
-    
-    # 读取路由规则
-    with open(route_file, 'r') as f:
-        file_content = f.read().strip()
-        if not file_content:
-            print(f"错误：route.json 文件为空")
-            print(f"请先使用功能17选项3恢复默认配置")
-            sys.exit(1)
-        route_config = json.loads(file_content)
-    
-    # 检查现有的中国大陆禁止规则
-    existing_block_rules = {}
-    total_rules = len(route_config.get('rules', []))
-    
-    for rule in route_config.get('rules', []):
-        if (rule.get('type') == 'field' and 
-            rule.get('outboundTag') == 'block' and 
-            'geoip:cn' in rule.get('source', [])):
-            
-            inbound_tags = rule.get('inboundTag', [])
-            for tag in inbound_tags:
-                # 匹配shadowsocks节点格式: [host]-shadowsocks:nodeid 或 [https://host]-shadowsocks:nodeid
-                if '-shadowsocks:' in tag:
-                    parts = tag.split('-shadowsocks:')
-                    if len(parts) == 2:
-                        host_part = parts[0].strip('[]')
-                        node_id = parts[1]
-                        existing_block_rules[node_id] = {
-                            'host': host_part,
-                            'tag': tag,
-                            'rule_tag': rule.get('ruleTag', '')
-                        }
-    
-    print(f"总路由规则数量: {total_rules}")
-    print(f"Shadowsocks节点总数: {len(ss_nodes)}")
-    print(f"已有中国大陆禁止规则的SS节点数: {len(existing_block_rules)}")
-    
-    if existing_block_rules:
-        print("\n✅ 已存在中国大陆禁止规则的SS节点:")
-        for i, (node_id, info) in enumerate(existing_block_rules.items(), 1):
-            print(f"  {i}. 节点ID: {node_id}, 主机: {info['host']}")
-    
-    # 找出缺少规则的节点
-    missing_rules = []
-    for node_id, host in ss_nodes.items():
-        if node_id not in existing_block_rules:
-            missing_rules.append(f"{node_id}:{host}")
-    
-    if missing_rules:
-        print(f"\n⚠️  缺少中国大陆禁止规则的SS节点 ({len(missing_rules)} 个):")
-        for i, node_info in enumerate(missing_rules, 1):
-            node_id, host = node_info.split(':')
-            print(f"  {i}. 节点ID: {node_id}, 主机: {host}")
-        print("MISSING_RULES:" + "|".join(missing_rules))
-    else:
-        print("\n✅ 所有SS节点都已配置中国大陆禁止规则")
-        print("NO_MISSING_RULES")
+    try:
+        # 读取V2bX配置文件，获取shadowsocks节点信息
+        print("正在读取V2bX配置文件...")
+        with open(config_file, 'r') as f:
+            config = json.load(f)
         
-except Exception as e:
-    print(f"检查规则状态时出错: {e}")
-    sys.exit(1)
-EOF
-    )
-    
-    if [[ $? -ne 0 ]]; then
-        echo -e "${red}检查现有规则状态失败${plain}"
-        return 1
-    fi
-    
-    echo -e "${cyan}$rules_status${plain}" | grep -v "^MISSING_RULES:\|^NO_MISSING_RULES"
-    
-    # 检查是否有缺少规则的节点
-    local missing_rules_line
-    missing_rules_line=$(echo "$rules_status" | grep "^MISSING_RULES:")
-    
-    if [[ "$rules_status" == *"NO_MISSING_RULES"* ]]; then
-        echo -e "\n${green}✅ 所有shadowsocks节点都已正确配置中国大陆禁止规则${plain}"
-        echo -e "${yellow}无需添加新规则。${plain}"
-        return 0
-    fi
-    
-    if [[ -n "$missing_rules_line" ]]; then
-        local missing_nodes_str="${missing_rules_line#MISSING_RULES:}"
-        local missing_nodes=()
+        # 提取shadowsocks节点
+        ss_nodes = {}
+        if 'Nodes' in config:
+            for node in config['Nodes']:
+                if node.get('NodeType') == 'shadowsocks':
+                    node_id = str(node.get('NodeID'))
+                    api_host = node.get('ApiHost', '')
+                    ss_nodes[node_id] = api_host
         
-        IFS='|' read -ra ADDR <<< "$missing_nodes_str"
-        for i in "${ADDR[@]}"; do
-            missing_nodes+=("$i")
-        done
-    
-    echo -e "\n${yellow}将为以下shadowsocks节点添加中国大陆禁止规则：${plain}"
-        for node_info in "${missing_nodes[@]}"; do
-        IFS=':' read -r node_id api_host <<< "$node_info"
-        echo -e "  ${cyan}- 节点ID: ${node_id}, ApiHost: ${api_host}${plain}"
-    done
-    
-    read -rp "确认为这些shadowsocks节点添加中国大陆禁止规则？(y/n): " confirm
-    if [[ "$confirm" != [Yy] ]]; then
-        echo -e "${yellow}操作已取消${plain}"
-        return 0
-        fi
+        if not ss_nodes:
+            print("未找到shadowsocks节点")
+            return False
         
-        # 更新ss_nodes数组为缺少规则的节点
-        ss_nodes=("${missing_nodes[@]}")
-    else
-        echo -e "${red}未找到需要添加规则的节点${plain}"
-        return 1
-    fi
-    
-    # 备份路由配置文件
-    local backup_file="${route_file}.backup.$(date +%Y%m%d_%H%M%S)"
-    cp "$route_file" "$backup_file"
-    echo -e "${green}已备份路由配置文件到：${plain}${backup_file}"
-    
-    # 构建节点映射字符串
-    local node_mappings=""
-    for node_info in "${ss_nodes[@]}"; do
-        IFS=':' read -r node_id api_host <<< "$node_info"
-        if [[ -n "$node_mappings" ]]; then
-            node_mappings="${node_mappings},${node_id}:shadowsocks:${api_host}"
-        else
-            node_mappings="${node_id}:shadowsocks:${api_host}"
-        fi
-    done
-    
-    echo -e "\n${yellow}正在添加中国大陆禁止规则...${plain}"
-    
-    # 使用Python添加中国大陆禁止规则
-    python3 << EOF
-import json
-import sys
-
-route_file = "$route_file"
-mappings_str = "$node_mappings"
-
-# 解析节点映射
-node_mappings = {}
-if mappings_str:
-    for mapping in mappings_str.split(','):
-        if mapping.strip():
-            parts = mapping.strip().split(':')
-            if len(parts) == 3:
-                node_id, node_type, api_host = parts
-                node_mappings[node_id] = {
-                    'type': node_type,
-                    'host': api_host
-                }
-
-try:
-    # 读取现有路由配置
-    with open(route_file, 'r') as f:
-        config = json.load(f)
-    
-    if 'rules' not in config:
-        config['rules'] = []
-    
-    # 检查是否已存在相同的规则
-    existing_rules = set()
-    for rule in config['rules']:
-        if rule.get('type') == 'field' and rule.get('outboundTag') == 'block':
-            inbound_tags = rule.get('inboundTag', [])
-            source = rule.get('source', [])
-            if 'geoip:cn' in source and inbound_tags:
+        print(f"找到 {len(ss_nodes)} 个shadowsocks节点:")
+        for node_id, api_host in ss_nodes.items():
+            print(f"  - 节点ID: {node_id}, ApiHost: {api_host}")
+        
+        # 检查route.json文件
+        print("\n正在检查路由配置文件...")
+        if not os.path.exists(route_file) or os.path.getsize(route_file) == 0:
+            print("错误：route.json 文件不存在或为空")
+            print("请先使用功能17选项3恢复默认配置")
+            return False
+        
+        with open(route_file, 'r') as f:
+            file_content = f.read().strip()
+            if not file_content:
+                print("错误：route.json 文件为空")
+                print("请先使用功能17选项3恢复默认配置")
+                return False
+            route_config = json.loads(file_content)
+        
+        # 检查现有的中国大陆禁止规则
+        print("\n正在检查现有的中国大陆禁止规则...")
+        existing_block_rules = {}
+        total_rules = len(route_config.get('rules', []))
+        
+        for rule in route_config.get('rules', []):
+            if (rule.get('type') == 'field' and 
+                rule.get('outboundTag') == 'block' and 
+                'geoip:cn' in rule.get('source', [])):
+                
+                inbound_tags = rule.get('inboundTag', [])
                 for tag in inbound_tags:
-                    existing_rules.add(tag)
-    
-    # 为shadowsocks节点添加阻止中国大陆连接的规则
-    added_count = 0
-    for node_id, info in node_mappings.items():
-        inbound_tag = f"[{info['host']}]-shadowsocks:{node_id}"
+                    # 匹配shadowsocks节点格式: [host]-shadowsocks:nodeid
+                    if '-shadowsocks:' in tag:
+                        parts = tag.split('-shadowsocks:')
+                        if len(parts) == 2:
+                            host_part = parts[0].strip('[]')
+                            node_id = parts[1]
+                            existing_block_rules[node_id] = {
+                                'host': host_part,
+                                'tag': tag,
+                                'rule_tag': rule.get('ruleTag', '')
+                            }
         
-        # 检查是否已存在
-        if inbound_tag in existing_rules:
-            print(f"节点 {node_id} 已存在中国大陆禁止规则，跳过")
-            continue
+        print(f"总路由规则数量: {total_rules}")
+        print(f"Shadowsocks节点总数: {len(ss_nodes)}")
+        print(f"已有中国大陆禁止规则的SS节点数: {len(existing_block_rules)}")
         
-        block_rule = {
-            "type": "field",
-            "inboundTag": [inbound_tag],
-            "source": ["geoip:cn"],
-            "outboundTag": "block",
-            "ruleTag": f"block-china-ss{node_id}"
-        }
+        if existing_block_rules:
+            print("\n✅ 已存在中国大陆禁止规则的SS节点:")
+            for i, (node_id, info) in enumerate(existing_block_rules.items(), 1):
+                print(f"  {i}. 节点ID: {node_id}, 主机: {info['host']}")
         
-        # 插入到规则列表开头，确保优先级
-        config["rules"].insert(0, block_rule)
-        added_count += 1
-        print(f"已为节点 {node_id} ({info['host']}) 添加中国大陆禁止规则")
-    
-    # 写回文件
-    with open(route_file, 'w') as f:
-        json.dump(config, f, indent=2, ensure_ascii=False)
-    
-    print(f"\n处理完成:")
-    print(f"总shadowsocks节点数: {len(node_mappings)}")
-    print(f"新增中国大陆禁止规则数: {added_count}")
-    print(f"当前总规则数: {len(config['rules'])}")
-    
-except Exception as e:
-    print(f"处理路由配置时出错: {e}")
-    sys.exit(1)
+        # 找出缺少规则的节点
+        missing_rules = []
+        for node_id, api_host in ss_nodes.items():
+            if node_id not in existing_block_rules:
+                missing_rules.append((node_id, api_host))
+        
+        if not missing_rules:
+            print("\n✅ 所有SS节点都已配置中国大陆禁止规则")
+            return True
+        
+        print(f"\n⚠️  缺少中国大陆禁止规则的SS节点 ({len(missing_rules)} 个):")
+        for i, (node_id, api_host) in enumerate(missing_rules, 1):
+            print(f"  {i}. 节点ID: {node_id}, ApiHost: {api_host}")
+        
+        # 询问用户是否添加规则
+        print(f"\n将为以上 {len(missing_rules)} 个shadowsocks节点添加中国大陆禁止规则")
+        confirm = input("确认添加规则？(y/n): ").strip().lower()
+        if confirm != 'y':
+            print("操作已取消")
+            return True
+        
+        # 备份路由配置文件
+        backup_file = f"{route_file}.backup.{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+        with open(route_file, 'r') as src, open(backup_file, 'w') as dst:
+            dst.write(src.read())
+        print(f"已备份路由配置文件到：{backup_file}")
+        
+        # 添加中国大陆禁止规则
+        print("\n正在添加中国大陆禁止规则...")
+        added_count = 0
+        
+        for node_id, api_host in missing_rules:
+            # 生成inboundTag，格式为 [api_host]-shadowsocks:node_id
+            inbound_tag = f"[{api_host}]-shadowsocks:{node_id}"
+            
+            # 创建阻止规则
+            block_rule = {
+                "type": "field",
+                "inboundTag": [inbound_tag],
+                "source": ["geoip:cn"],
+                "outboundTag": "block",
+                "ruleTag": f"block-china-ss{node_id}"
+            }
+            
+            # 插入到规则列表开头，确保优先级
+            route_config["rules"].insert(0, block_rule)
+            added_count += 1
+            print(f"已为节点 {node_id} ({api_host}) 添加中国大陆禁止规则")
+        
+        # 写回文件
+        with open(route_file, 'w') as f:
+            json.dump(route_config, f, indent=2, ensure_ascii=False)
+        
+        print(f"\n✅ 处理完成:")
+        print(f"总shadowsocks节点数: {len(ss_nodes)}")
+        print(f"新增中国大陆禁止规则数: {added_count}")
+        print(f"当前总规则数: {len(route_config['rules'])}")
+        
+        return True
+        
+    except Exception as e:
+        print(f"处理时出错: {e}")
+        return False
+
+if __name__ == "__main__":
+    success = main()
+    sys.exit(0 if success else 1)
 EOF
     
     if [[ $? -eq 0 ]]; then
-        echo -e "\n${green}=== shadowsocks节点中国大陆禁止规则添加完成 ===${plain}"
+        echo -e "\n${green}=== shadowsocks节点中国大陆禁止规则处理完成 ===${plain}"
         echo -e "${yellow}配置文件已更新：${plain}${cyan}${route_file}${plain}"
         echo -e "${yellow}规则效果：${plain}"
         echo -e "  - ${cyan}来自中国大陆的IP将无法直接连接shadowsocks节点${plain}"
@@ -2074,8 +1931,7 @@ EOF
         echo -e "\n${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
         echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
     else
-        echo -e "${red}添加中国大陆禁止规则失败，请检查配置文件${plain}"
-        echo -e "${yellow}可以使用备份文件恢复：${plain}${cyan}cp ${backup_file} ${route_file}${plain}"
+        echo -e "${red}处理shadowsocks节点中国大陆禁止规则失败${plain}"
         return 1
     fi
 }
