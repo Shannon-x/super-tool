@@ -4033,8 +4033,9 @@ show_menu() {
   ${yellow}15.${plain} 服务器安全设置 (SSH/Fail2ban/更新)
   ${yellow}16.${plain} 删除脚本并卸载isufe快捷命令
   ${yellow}17.${plain} 防止谷歌送中
+  ${yellow}18.${plain} 增加V2bX节点
   ---"
-    read -rp "请输入选项 [0-17]: " choice
+    read -rp "请输入选项 [0-18]: " choice
     
     case $choice in
         0)
@@ -4115,8 +4116,11 @@ show_menu() {
         17)
             google_protection_menu
             ;;
+        18)
+            add_v2bx_node
+            ;;
         *)
-            echo -e "${red}无效的选项，请输入 0-17${plain}"
+            echo -e "${red}无效的选项，请输入 0-18${plain}"
             ;;
     esac
 }
@@ -5831,6 +5835,352 @@ uninstall_script() {
     echo -e "\n${red}脚本将在5秒后退出...${plain}"
     sleep 5
     exit 0
+}
+
+############################################################
+# 功能 18: 增加V2bX节点
+############################################################
+
+# 增加V2bX节点主函数
+add_v2bx_node() {
+    echo -e "${green}=== 增加V2bX节点 ===${plain}"
+    
+    local config_file="/etc/V2bX/config.json"
+    
+    # 检查配置文件是否存在
+    if [[ ! -f "$config_file" ]]; then
+        echo -e "${red}错误：V2bX配置文件 $config_file 不存在${plain}"
+        echo -e "${yellow}请先安装V2bX（选择功能2）${plain}"
+        return 1
+    fi
+    
+    # 显示当前节点信息
+    show_current_nodes
+    
+    # 获取节点信息
+    echo -e "\n${yellow}请输入新节点信息：${plain}"
+    
+    local node_id
+    while true; do
+        read -rp "节点ID（数字）: " node_id
+        if [[ "$node_id" =~ ^[0-9]+$ ]]; then
+            # 检查节点ID是否已存在
+            if check_node_id_exists "$node_id"; then
+                echo -e "${red}错误：节点ID $node_id 已存在，请选择其他ID${plain}"
+                continue
+            fi
+            break
+        else
+            echo -e "${red}错误：请输入有效的数字${plain}"
+        fi
+    done
+    
+    # 选择节点类型
+    echo -e "\n${yellow}请选择节点类型：${plain}"
+    echo -e "  ${cyan}1.${plain} vless"
+    echo -e "  ${cyan}2.${plain} shadowsocks"
+    echo -e "  ${cyan}3.${plain} hysteria2"
+    
+    local node_type
+    while true; do
+        read -rp "请选择节点类型 [1-3]: " type_choice
+        case $type_choice in
+            1)
+                node_type="vless"
+                break
+                ;;
+            2)
+                node_type="shadowsocks"
+                break
+                ;;
+            3)
+                node_type="hysteria2"
+                break
+                ;;
+            *)
+                echo -e "${red}无效选择，请输入1-3${plain}"
+                ;;
+        esac
+    done
+    
+    # 根据节点类型添加节点
+    case $node_type in
+        "vless"|"shadowsocks")
+            add_xray_node "$node_id" "$node_type"
+            ;;
+        "hysteria2")
+            add_hysteria2_node "$node_id"
+            ;;
+    esac
+}
+
+# 显示当前节点信息
+show_current_nodes() {
+    echo -e "\n${cyan}当前V2bX节点信息：${plain}"
+    
+    python3 << 'EOF'
+import json
+import sys
+
+config_file = "/etc/V2bX/config.json"
+
+try:
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    nodes = config.get('Nodes', [])
+    if not nodes:
+        print("  暂无节点")
+        sys.exit(0)
+    
+    print(f"  共有 {len(nodes)} 个节点:")
+    for i, node in enumerate(nodes, 1):
+        node_id = node.get('NodeID', 'N/A')
+        node_type = node.get('NodeType', 'N/A')
+        api_host = node.get('ApiHost', 'N/A')
+        core = node.get('Core', 'N/A')
+        print(f"  {i}. ID: {node_id}, 类型: {node_type}, 核心: {core}, 主机: {api_host}")
+        
+except Exception as e:
+    print(f"读取配置文件时出错: {e}")
+    sys.exit(1)
+EOF
+}
+
+# 检查节点ID是否已存在
+check_node_id_exists() {
+    local node_id="$1"
+    
+    python3 << EOF
+import json
+import sys
+
+config_file = "/etc/V2bX/config.json"
+target_id = int("$node_id")
+
+try:
+    with open(config_file, 'r') as f:
+        config = json.load(f)
+    
+    nodes = config.get('Nodes', [])
+    for node in nodes:
+        if node.get('NodeID') == target_id:
+            sys.exit(0)  # 节点ID已存在
+    
+    sys.exit(1)  # 节点ID不存在
+    
+except Exception as e:
+    print(f"检查节点ID时出错: {e}")
+    sys.exit(1)
+EOF
+    
+    return $?
+}
+
+# 添加xray节点（vless/shadowsocks）
+add_xray_node() {
+    local node_id="$1"
+    local node_type="$2"
+    
+    echo -e "\n${green}添加 ${node_type} 节点（ID: ${node_id}）${plain}"
+    
+    # 备份配置文件
+    local backup_file="/etc/V2bX/config.json.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "/etc/V2bX/config.json" "$backup_file"
+    echo -e "${green}已备份配置文件到：${plain}${backup_file}"
+    
+    # 添加节点
+    python3 << EOF
+import json
+import sys
+from datetime import datetime
+
+def add_xray_node():
+    config_file = "/etc/V2bX/config.json"
+    node_id = int("$node_id")
+    node_type = "$node_type"
+    
+    try:
+        # 读取现有配置
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+        
+        # 创建新节点配置
+        new_node = {
+            "Core": "xray",
+            "ApiHost": "https://www.isufe.me",
+            "ApiKey": "ycUIogRFk8njnqLd4yqP0jaetB5H+Ya5cknDxDHb2UA=",
+            "NodeID": node_id,
+            "NodeType": node_type,
+            "Timeout": 30,
+            "ListenIP": "0.0.0.0",
+            "SendIP": "0.0.0.0",
+            "DeviceOnlineMinTraffic": 200,
+            "EnableProxyProtocol": False,
+            "EnableUot": True,
+            "EnableTFO": True,
+            "DNSType": "UseIPv4",
+            "CertConfig": {
+                "CertMode": "none",
+                "RejectUnknownSni": False,
+                "CertDomain": "example.com",
+                "CertFile": "/etc/V2bX/fullchain.cer",
+                "KeyFile": "/etc/V2bX/cert.key",
+                "Email": "v2bx@github.com",
+                "Provider": "cloudflare",
+                "DNSEnv": {
+                    "EnvName": "env1"
+                }
+            }
+        }
+        
+        # 添加节点到配置
+        if 'Nodes' not in config:
+            config['Nodes'] = []
+        
+        config['Nodes'].append(new_node)
+        
+        # 写回配置文件
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
+        
+        print(f"✅ 成功添加 {node_type} 节点（ID: {node_id}）")
+        print(f"   - 核心: xray")
+        print(f"   - 主机: https://www.isufe.me")
+        print(f"   - 类型: {node_type}")
+        print(f"   - 监听IP: 0.0.0.0")
+        print(f"   - 证书模式: none")
+        
+        return True
+        
+    except Exception as e:
+        print(f"添加节点时出错: {e}")
+        return False
+
+if __name__ == "__main__":
+    success = add_xray_node()
+    sys.exit(0 if success else 1)
+EOF
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "\n${green}=== ${node_type} 节点添加完成 ===${plain}"
+        echo -e "${yellow}请重启V2bX服务使配置生效：${plain}"
+        echo -e "${cyan}systemctl restart V2bX${plain}"
+    else
+        echo -e "${red}添加节点失败${plain}"
+        echo -e "${yellow}可以使用备份文件恢复：${plain}"
+        echo -e "${cyan}cp ${backup_file} /etc/V2bX/config.json${plain}"
+        return 1
+    fi
+}
+
+# 添加hysteria2节点
+add_hysteria2_node() {
+    local node_id="$1"
+    
+    echo -e "\n${green}添加 hysteria2 节点（ID: ${node_id}）${plain}"
+    
+    # 获取证书域名
+    local cert_domain
+    while true; do
+        read -rp "请输入证书域名（如：ushome01.388898.xyz）: " cert_domain
+        if [[ -n "$cert_domain" ]]; then
+            break
+        else
+            echo -e "${red}错误：证书域名不能为空${plain}"
+        fi
+    done
+    
+    # 备份配置文件
+    local backup_file="/etc/V2bX/config.json.backup.$(date +%Y%m%d_%H%M%S)"
+    cp "/etc/V2bX/config.json" "$backup_file"
+    echo -e "${green}已备份配置文件到：${plain}${backup_file}"
+    
+    # 添加节点
+    python3 << EOF
+import json
+import sys
+from datetime import datetime
+
+def add_hysteria2_node():
+    config_file = "/etc/V2bX/config.json"
+    node_id = int("$node_id")
+    cert_domain = "$cert_domain"
+    
+    try:
+        # 读取现有配置
+        with open(config_file, 'r') as f:
+            config = json.load(f)
+        
+        # 创建新节点配置
+        new_node = {
+            "Core": "hysteria2",
+            "ApiHost": "https://www.isufe.me",
+            "ApiKey": "ycUIogRFk8njnqLd4yqP0jaetB5H+Ya5cknDxDHb2UA=",
+            "NodeID": node_id,
+            "NodeType": "hysteria2",
+            "Hysteria2ConfigPath": "/etc/V2bX/hy2config.yaml",
+            "Timeout": 30,
+            "ListenIP": "",
+            "SendIP": "0.0.0.0",
+            "DeviceOnlineMinTraffic": 200,
+            "CertConfig": {
+                "CertMode": "dns",
+                "RejectUnknownSni": False,
+                "CertDomain": cert_domain,
+                "CertFile": "/etc/V2bX/fullchain.cer",
+                "KeyFile": "/etc/V2bX/cert.key",
+                "Email": "v2bx@github.com",
+                "Provider": "cloudflare",
+                "DNSEnv": {
+                    "CLOUDFLARE_DNS_API_TOKEN": "0GLqZFZPM36ikBhiR3M2pJtAFHI1qUW3YF4Unqi0"
+                }
+            }
+        }
+        
+        # 添加节点到配置
+        if 'Nodes' not in config:
+            config['Nodes'] = []
+        
+        config['Nodes'].append(new_node)
+        
+        # 写回配置文件
+        with open(config_file, 'w') as f:
+            json.dump(config, f, indent=4, ensure_ascii=False)
+        
+        print(f"✅ 成功添加 hysteria2 节点（ID: {node_id}）")
+        print(f"   - 核心: hysteria2")
+        print(f"   - 主机: https://www.isufe.me")
+        print(f"   - 类型: hysteria2")
+        print(f"   - 证书域名: {cert_domain}")
+        print(f"   - 证书模式: dns（自动使用DNS签名）")
+        print(f"   - 配置文件: /etc/V2bX/hy2config.yaml")
+        
+        return True
+        
+    except Exception as e:
+        print(f"添加节点时出错: {e}")
+        return False
+
+if __name__ == "__main__":
+    success = add_hysteria2_node()
+    sys.exit(0 if success else 1)
+EOF
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "\n${green}=== hysteria2 节点添加完成 ===${plain}"
+        echo -e "${yellow}证书配置信息：${plain}"
+        echo -e "  - 证书域名: ${cyan}${cert_domain}${plain}"
+        echo -e "  - 证书模式: ${cyan}dns（自动DNS签名）${plain}"
+        echo -e "  - 提供商: ${cyan}cloudflare${plain}"
+        echo -e "\n${yellow}请重启V2bX服务使配置生效：${plain}"
+        echo -e "${cyan}systemctl restart V2bX${plain}"
+    else
+        echo -e "${red}添加节点失败${plain}"
+        echo -e "${yellow}可以使用备份文件恢复：${plain}"
+        echo -e "${cyan}cp ${backup_file} /etc/V2bX/config.json${plain}"
+        return 1
+    fi
 }
 
 # 执行主函数
