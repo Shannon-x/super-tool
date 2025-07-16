@@ -5075,7 +5075,8 @@ google_protection_menu() {
     echo -e "\n${green}=== 防止谷歌送中 ===${plain}"
     echo -e "  ${cyan}1.${plain} 添加防止送中的措施"
     echo -e "  ${cyan}2.${plain} 取消送中的安全措施"
-    read -rp "请选择操作 [1-2]: " google_choice
+    echo -e "  ${cyan}3.${plain} 恢复默认的route.json配置"
+    read -rp "请选择操作 [1-3]: " google_choice
     
     case $google_choice in
         1)
@@ -5083,6 +5084,9 @@ google_protection_menu() {
             ;;
         2)
             remove_google_protection
+            ;;
+        3)
+            restore_default_route_config
             ;;
         *)
             echo -e "${red}无效的选择${plain}"
@@ -5196,6 +5200,19 @@ EOF
     # 添加新配置到数组中
     local new_config=$(echo "$current_config" | jq ". += [$google_out_config]" --argjson google_out_config "$google_out_config")
     
+    # 校验 jq 输出
+    if [[ -z "$new_config" || "$new_config" == "null" ]]; then
+        echo -e "${red}✗ 处理 custom_outbound.json 时发生错误，未写入新内容${plain}"
+        return 1
+    fi
+    
+    # 再用 jq 校验格式
+    echo "$new_config" | jq . > /dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}✗ 生成的 custom_outbound.json 格式有误，未写入新内容${plain}"
+        return 1
+    fi
+    
     # 写入文件
     echo "$new_config" > /etc/V2bX/custom_outbound.json
     
@@ -5230,6 +5247,19 @@ EOF
     
     # 将谷歌规则插入到rules数组的开头（优先级更高）
     local new_route_config=$(echo "$route_config" | jq --argjson google_rule "$google_rule" '.rules = [$google_rule] + .rules')
+    
+    # 校验 jq 输出
+    if [[ -z "$new_route_config" || "$new_route_config" == "null" ]]; then
+        echo -e "${red}✗ 处理 route.json 时发生错误，未写入新内容${plain}"
+        return 1
+    fi
+    
+    # 再用 jq 校验格式
+    echo "$new_route_config" | jq . > /dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}✗ 生成的 route.json 格式有误，未写入新内容${plain}"
+        return 1
+    fi
     
     # 写入文件
     echo "$new_route_config" > /etc/V2bX/route.json
@@ -5311,7 +5341,7 @@ acl:
 masquerade:
   type: 404
 EOF
-            
+    
             if [[ $? -eq 0 ]]; then
                 echo -e "${green}    ✓ $hy2_file 更新成功${plain}"
             else
@@ -5338,6 +5368,121 @@ EOF
     echo -e "  3. 更新了所有 hy2*.yaml 配置文件"
     echo -e "  4. 重启了 V2bX 服务"
     echo -e "\n${yellow}注意：${plain}所有谷歌相关域名现在将通过专用代理访问"
+}
+
+# 恢复默认的route.json配置
+restore_default_route_config() {
+    echo -e "\n${green}=== 恢复默认的route.json配置 ===${plain}"
+    
+    echo -e "${yellow}此操作将：${plain}"
+    echo -e "  1. 备份当前的 route.json 文件"
+    echo -e "  2. 创建一个基础的 route.json 配置"
+    echo -e "  3. 重启 V2bX 服务"
+    
+    read -rp "确定要继续吗？(y/n): " confirm
+    if [[ "$confirm" != [Yy] ]]; then
+        echo -e "${yellow}操作已取消${plain}"
+        return 0
+    fi
+    
+    # 备份当前文件（如果存在且不为空）
+    if [[ -f "/etc/V2bX/route.json" ]] && [[ -s "/etc/V2bX/route.json" ]]; then
+        local backup_file="/etc/V2bX/route.json.backup.$(date +%Y%m%d_%H%M%S)"
+        cp "/etc/V2bX/route.json" "$backup_file"
+        echo -e "${green}已备份当前配置到：${plain}${backup_file}"
+    fi
+    
+    # 创建默认的route.json配置
+    echo -e "\n${blue}正在创建默认的 route.json 配置...${plain}"
+    
+    cat > /etc/V2bX/route.json << 'EOF'
+{
+  "domainStrategy": "AsIs",
+  "rules": [
+    {
+      "type": "field",
+      "outboundTag": "block",
+      "ip": ["geoip:private"]
+    },
+    {
+      "type": "field",
+      "outboundTag": "block",
+      "domain": [
+        "regexp:(api|ps|sv|offnavi|newvector|ulog.imap|newloc)(.map|).(baidu|n.shifen).com",
+        "regexp:(.+.|^)(360|so).(cn|com)",
+        "regexp:(Subject|HELO|SMTP)",
+        "regexp:(torrent|.torrent|peer_id=|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=)",
+        "regexp:(^.@)(guerrillamail|guerrillamailblock|sharklasers|grr|pokemail|spam4|bccto|chacuo|027168).(info|biz|com|de|net|org|me|la)",
+        "regexp:(.?)(xunlei|sandai|Thunder|XLLiveUD)(.)",
+        "regexp:(..||)(dafahao|mingjinglive|botanwang|minghui|dongtaiwang|falunaz|epochtimes|ntdtv|falundafa|falungong|wujieliulan|zhengjian).(org|com|net)",
+        "regexp:(ed2k|.torrent|peer_id=|announce|info_hash|get_peers|find_node|BitTorrent|announce_peer|announce.php?passkey=|magnet:|xunlei|sandai|Thunder|XLLiveUD|bt_key)",
+        "regexp:(.+.|^)(360).(cn|com|net)",
+        "regexp:(.*.||)(guanjia.qq.com|qqpcmgr|QQPCMGR)",
+        "regexp:(.*.||)(rising|kingsoft|duba|xindubawukong|jinshanduba).(com|net|org)",
+        "regexp:(.*.||)(netvigator|torproject).(com|cn|net|org)",
+        "regexp:(..||)(visa|mycard|gash|beanfun|bank).",
+        "regexp:(.*.||)(gov|12377|12315|talk.news.pts.org|creaders|zhuichaguoji|efcc.org|cyberpolice|aboluowang|tuidang|epochtimes|zhengjian|110.qq|mingjingnews|inmediahk|xinsheng|breakgfw|chengmingmag|jinpianwang|qi-gong|mhradio|edoors|renminbao|soundofhope|xizang-zhiye|bannedbook|ntdtv|12321|secretchina|dajiyuan|boxun|chinadigitaltimes|dwnews|huaglad|oneplusnews|epochweekly|cn.rfi).(cn|com|org|net|club|fr|tw|hk|eu|info|me)",
+        "regexp:(.*.||)(miaozhen|cnzz|talkingdata|umeng).(cn|com)",
+        "regexp:(.*.||)(mycard).(com|tw)",
+        "regexp:(.*.||)(gash).(com|tw)",
+        "regexp:(.bank.)",
+        "regexp:(.*.||)(pincong).(rocks)",
+        "regexp:(.*.||)(taobao).(com)",
+        "regexp:(.*.||)(laomoe|jiyou|ssss|lolicp|vv1234|0z|4321q|868123|ksweb|mm126).(com|cloud|fun|cn|gs|xyz|cc)",
+        "regexp:(flows|miaoko).(pages).(dev)"
+      ]
+    },
+    {
+      "type": "field",
+      "outboundTag": "block",
+      "ip": [
+        "127.0.0.1/32",
+        "10.0.0.0/8",
+        "fc00::/7",
+        "fe80::/10",
+        "172.16.0.0/12"
+      ]
+    },
+    {
+      "type": "field",
+      "outboundTag": "block",
+      "protocol": ["bittorrent"]
+    }
+  ]
+}
+EOF
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "${green}✓ 默认 route.json 配置创建成功${plain}"
+    else
+        echo -e "${red}✗ 创建默认 route.json 配置失败${plain}"
+        return 1
+    fi
+    
+    # 验证JSON格式
+    jq . /etc/V2bX/route.json > /dev/null 2>&1
+    if [[ $? -ne 0 ]]; then
+        echo -e "${red}✗ 生成的 route.json 格式有误${plain}"
+        return 1
+    fi
+    
+    # 重启V2bX服务
+    echo -e "\n${blue}正在重启 V2bX 服务...${plain}"
+    systemctl restart v2bx
+    
+    if [[ $? -eq 0 ]]; then
+        echo -e "${green}✓ V2bX 服务重启成功${plain}"
+    else
+        echo -e "${red}✗ V2bX 服务重启失败${plain}"
+        echo -e "${yellow}请手动运行: systemctl restart v2bx${plain}"
+    fi
+    
+    echo -e "\n${green}=== 默认route.json配置恢复完成 ===${plain}"
+    echo -e "${cyan}已创建基础的路由配置，包含：${plain}"
+    echo -e "  - 基本的域名和IP拦截规则"
+    echo -e "  - BT下载拦截规则"
+    echo -e "  - 恶意软件拦截规则"
+    echo -e "\n${yellow}注意：${plain}您可能需要根据实际需求调整路由规则"
 }
 
 # 取消防止谷歌送中的措施
@@ -5373,10 +5518,32 @@ remove_google_protection() {
     
     local current_config=$(cat /etc/V2bX/custom_outbound.json)
     
+    # 检查文件是否为空
+    if [[ -z "$current_config" ]]; then
+        echo -e "${red}错误：custom_outbound.json 文件为空，无法处理${plain}"
+        echo -e "${yellow}请检查 custom_outbound.json 文件内容或从备份恢复${plain}"
+        return 1
+    fi
+    
     # 检查是否存在google_out
     if echo "$current_config" | grep -q '"tag": "google_out"'; then
         # 删除google_out配置
         local new_config=$(echo "$current_config" | jq 'del(.[] | select(.tag == "google_out"))')
+        
+        # 校验 jq 输出
+        if [[ -z "$new_config" || "$new_config" == "null" ]]; then
+            echo -e "${red}✗ 处理 custom_outbound.json 时发生错误，未写入新内容，原文件已保留${plain}"
+            return 1
+        fi
+        
+        # 再用 jq 校验格式
+        echo "$new_config" | jq . > /dev/null 2>&1
+        if [[ $? -ne 0 ]]; then
+            echo -e "${red}✗ 生成的 custom_outbound.json 格式有误，未写入新内容，原文件已保留${plain}"
+            return 1
+        fi
+        
+        # 写入文件
         echo "$new_config" > /etc/V2bX/custom_outbound.json
         
         if [[ $? -eq 0 ]]; then
@@ -5394,10 +5561,32 @@ remove_google_protection() {
     
     local route_config=$(cat /etc/V2bX/route.json)
     
+    # 检查文件是否为空
+    if [[ -z "$route_config" ]]; then
+        echo -e "${red}错误：route.json 文件为空，无法处理${plain}"
+        echo -e "${yellow}请检查 route.json 文件内容或从备份恢复${plain}"
+        return 1
+    fi
+    
     # 检查是否存在谷歌路由规则
     if echo "$route_config" | grep -q '"domain": \["geosite:google"\]'; then
         # 删除谷歌路由规则
         local new_route_config=$(echo "$route_config" | jq '.rules = (.rules | map(select(.domain != ["geosite:google"])))')
+        
+        # 校验 jq 输出
+        if [[ -z "$new_route_config" || "$new_route_config" == "null" ]]; then
+            echo -e "${red}✗ 处理 route.json 时发生错误，未写入新内容，原文件已保留${plain}"
+            return 1
+        fi
+        
+        # 再用 jq 校验格式
+        echo "$new_route_config" | jq . > /dev/null 2>&1
+        if [[ $? -ne 0 ]]; then
+            echo -e "${red}✗ 生成的 route.json 格式有误，未写入新内容，原文件已保留${plain}"
+            return 1
+        fi
+        
+        # 写入文件
         echo "$new_route_config" > /etc/V2bX/route.json
         
         if [[ $? -eq 0 ]]; then
