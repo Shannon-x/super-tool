@@ -4019,32 +4019,78 @@ install_claude_code() {
     # 步骤1：安装Node.js和npm
     echo -e "${yellow}步骤1：安装Node.js和npm${plain}"
     
-    # 检测操作系统
-    echo -e "${cyan}检测到的操作系统: $release${plain}"
+    # 检测操作系统 - 使用更强大的检测逻辑
+    local detected_os=""
     
-    if [[ "$release" == "centos" ]]; then
-        # CentOS/RHEL
-        if ! command -v node &> /dev/null; then
-            echo -e "${cyan}正在安装Node.js和npm...${plain}"
-            curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash -
-            yum install -y nodejs
-        else
-            echo -e "${green}Node.js已安装，版本: $(node --version)${plain}"
-        fi
-    elif [[ "$release" == "ubuntu" || "$release" == "debian" ]]; then
-        # Ubuntu/Debian
-        if ! command -v node &> /dev/null; then
-            echo -e "${cyan}正在安装Node.js和npm...${plain}"
-            curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
-            apt-get install -y nodejs
-        else
-            echo -e "${green}Node.js已安装，版本: $(node --version)${plain}"
-        fi
-    else
-        echo -e "${red}不支持的操作系统: $release${plain}"
-        echo -e "${yellow}支持的操作系统: CentOS, Ubuntu, Debian${plain}"
-        return 1
+    # 方法1：检查 /etc/os-release
+    if [[ -f /etc/os-release ]]; then
+        . /etc/os-release
+        detected_os=$(echo "$ID" | tr '[:upper:]' '[:lower:]')
+        echo -e "${cyan}从 /etc/os-release 检测到: $detected_os${plain}"
     fi
+    
+    # 方法2：如果方法1失败，使用传统检测
+    if [[ -z "$detected_os" ]]; then
+        if [[ -f /etc/redhat-release ]]; then
+            detected_os="centos"
+        elif command -v apt-get &> /dev/null; then
+            detected_os="debian"
+        elif command -v yum &> /dev/null; then
+            detected_os="centos"
+        fi
+        echo -e "${cyan}使用传统方法检测到: $detected_os${plain}"
+    fi
+    
+    # 方法3：显示更多调试信息
+    echo -e "${cyan}全局变量 release: '$release'${plain}"
+    echo -e "${cyan}检测到的系统: '$detected_os'${plain}"
+    
+    # 统一处理不同的系统名称
+    case "$detected_os" in
+        "ubuntu"|"debian"|"linuxmint"|"pop"|"elementary")
+            echo -e "${green}使用 Debian/Ubuntu 系列安装方法${plain}"
+            if ! command -v node &> /dev/null; then
+                echo -e "${cyan}正在安装Node.js和npm...${plain}"
+                # 更新包列表
+                apt-get update
+                # 安装 curl 如果不存在
+                apt-get install -y curl
+                # 安装 Node.js
+                curl -fsSL https://deb.nodesource.com/setup_lts.x | bash -
+                apt-get install -y nodejs
+            else
+                echo -e "${green}Node.js已安装，版本: $(node --version)${plain}"
+            fi
+            ;;
+        "centos"|"rhel"|"fedora"|"rocky"|"alma"|"oracle")
+            echo -e "${green}使用 CentOS/RHEL 系列安装方法${plain}"
+            if ! command -v node &> /dev/null; then
+                echo -e "${cyan}正在安装Node.js和npm...${plain}"
+                # 安装 curl 如果不存在
+                yum install -y curl
+                # 安装 Node.js
+                curl -fsSL https://rpm.nodesource.com/setup_lts.x | bash -
+                yum install -y nodejs
+            else
+                echo -e "${green}Node.js已安装，版本: $(node --version)${plain}"
+            fi
+            ;;
+        *)
+            echo -e "${red}不支持的操作系统: '$detected_os'${plain}"
+            echo -e "${yellow}支持的操作系统: Ubuntu, Debian, CentOS, RHEL, Fedora${plain}"
+            echo -e "${yellow}如果您使用的是兼容系统，请联系脚本作者${plain}"
+            
+            # 显示系统信息帮助调试
+            echo -e "\n${yellow}系统信息调试：${plain}"
+            [[ -f /etc/os-release ]] && echo -e "${cyan}/etc/os-release 内容：${plain}" && cat /etc/os-release
+            echo -e "${cyan}可用的包管理器：${plain}"
+            command -v apt-get &> /dev/null && echo "  - apt-get: 可用"
+            command -v yum &> /dev/null && echo "  - yum: 可用"
+            command -v dnf &> /dev/null && echo "  - dnf: 可用"
+            
+            return 1
+            ;;
+    esac
     
     # 验证安装
     if ! command -v node &> /dev/null || ! command -v npm &> /dev/null; then
