@@ -4020,6 +4020,8 @@ install_claude_code() {
     echo -e "${yellow}步骤1：安装Node.js和npm${plain}"
     
     # 检测操作系统
+    echo -e "${cyan}检测到的操作系统: $release${plain}"
+    
     if [[ "$release" == "centos" ]]; then
         # CentOS/RHEL
         if ! command -v node &> /dev/null; then
@@ -4029,7 +4031,7 @@ install_claude_code() {
         else
             echo -e "${green}Node.js已安装，版本: $(node --version)${plain}"
         fi
-    elif [[ "$release" == "ubuntu" ]]; then
+    elif [[ "$release" == "ubuntu" || "$release" == "debian" ]]; then
         # Ubuntu/Debian
         if ! command -v node &> /dev/null; then
             echo -e "${cyan}正在安装Node.js和npm...${plain}"
@@ -4039,7 +4041,8 @@ install_claude_code() {
             echo -e "${green}Node.js已安装，版本: $(node --version)${plain}"
         fi
     else
-        echo -e "${red}不支持的操作系统${plain}"
+        echo -e "${red}不支持的操作系统: $release${plain}"
+        echo -e "${yellow}支持的操作系统: CentOS, Ubuntu, Debian${plain}"
         return 1
     fi
     
