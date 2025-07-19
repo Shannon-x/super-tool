@@ -42,6 +42,165 @@ release=""
 arch=""
 os_version=""
 
+# 依赖检查和安装函数
+check_and_install_dependencies() {
+    echo -e "${yellow}正在检查必要的依赖...${plain}"
+    
+    local missing_deps=()
+    local install_command=""
+    
+    # 检测系统类型并设置安装命令
+    if [[ -f /etc/redhat-release ]]; then
+        # CentOS/RHEL/Rocky/AlmaLinux
+        if command -v dnf >/dev/null 2>&1; then
+            install_command="dnf install -y"
+        else
+            install_command="yum install -y"
+        fi
+    elif [[ -f /etc/debian_version ]]; then
+        # Debian/Ubuntu
+        install_command="apt-get update && apt-get install -y"
+    elif [[ -f /etc/alpine-release ]]; then
+        # Alpine
+        install_command="apk add"
+    else
+        echo -e "${red}警告：未能识别系统类型，可能无法自动安装依赖${plain}"
+        return 1
+    fi
+    
+    # 检查python3
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${yellow}未检测到 python3，将进行安装...${plain}"
+        missing_deps+=("python3")
+    else
+        echo -e "${green}✓ python3 已安装${plain}"
+    fi
+    
+    # 检查curl
+    if ! command -v curl >/dev/null 2>&1; then
+        echo -e "${yellow}未检测到 curl，将进行安装...${plain}"
+        missing_deps+=("curl")
+    else
+        echo -e "${green}✓ curl 已安装${plain}"
+    fi
+    
+    # 检查jq（用于JSON处理）
+    if ! command -v jq >/dev/null 2>&1; then
+        echo -e "${yellow}未检测到 jq，将进行安装...${plain}"
+        missing_deps+=("jq")
+    else
+        echo -e "${green}✓ jq 已安装${plain}"
+    fi
+    
+    # 如果有缺失的依赖，进行安装
+    if [[ ${#missing_deps[@]} -gt 0 ]]; then
+        echo -e "\n${yellow}需要安装以下依赖：${plain}${cyan}${missing_deps[*]}${plain}"
+        read -rp "是否现在自动安装这些依赖？(y/n): " auto_install
+        
+        if [[ "$auto_install" == [Yy] ]]; then
+            echo -e "${yellow}正在安装依赖...${plain}"
+            
+            # 根据系统类型执行安装命令
+            if [[ -f /etc/debian_version ]]; then
+                # Debian/Ubuntu
+                apt-get update
+                for dep in "${missing_deps[@]}"; do
+                    echo -e "${cyan}正在安装 ${dep}...${plain}"
+                    if ! apt-get install -y "$dep"; then
+                        echo -e "${red}安装 ${dep} 失败${plain}"
+                        return 1
+                    fi
+                done
+            elif [[ -f /etc/redhat-release ]]; then
+                # CentOS/RHEL/Rocky/AlmaLinux
+                for dep in "${missing_deps[@]}"; do
+                    echo -e "${cyan}正在安装 ${dep}...${plain}"
+                    if command -v dnf >/dev/null 2>&1; then
+                        if ! dnf install -y "$dep"; then
+                            echo -e "${red}安装 ${dep} 失败${plain}"
+                            return 1
+                        fi
+                    else
+                        if ! yum install -y "$dep"; then
+                            echo -e "${red}安装 ${dep} 失败${plain}"
+                            return 1
+                        fi
+                    fi
+                done
+            elif [[ -f /etc/alpine-release ]]; then
+                # Alpine
+                for dep in "${missing_deps[@]}"; do
+                    echo -e "${cyan}正在安装 ${dep}...${plain}"
+                    if ! apk add "$dep"; then
+                        echo -e "${red}安装 ${dep} 失败${plain}"
+                        return 1
+                    fi
+                done
+            fi
+            
+            echo -e "${green}✅ 依赖安装完成${plain}"
+            
+            # 再次验证安装
+            local verification_failed=false
+            for dep in "${missing_deps[@]}"; do
+                if [[ "$dep" == "python3" ]] && ! command -v python3 >/dev/null 2>&1; then
+                    echo -e "${red}✗ python3 安装验证失败${plain}"
+                    verification_failed=true
+                elif [[ "$dep" == "curl" ]] && ! command -v curl >/dev/null 2>&1; then
+                    echo -e "${red}✗ curl 安装验证失败${plain}"
+                    verification_failed=true
+                elif [[ "$dep" == "jq" ]] && ! command -v jq >/dev/null 2>&1; then
+                    echo -e "${red}✗ jq 安装验证失败${plain}"
+                    verification_failed=true
+                fi
+            done
+            
+            if [[ "$verification_failed" == true ]]; then
+                echo -e "\n${red}依赖安装验证失败，请手动安装以下命令：${plain}"
+                echo -e "${cyan}# Ubuntu/Debian:${plain}"
+                echo -e "${cyan}apt-get update && apt-get install -y python3 curl jq${plain}"
+                echo -e "${cyan}# CentOS/RHEL:${plain}"  
+                echo -e "${cyan}yum install -y python3 curl jq${plain}"
+                echo -e "${cyan}# 或者使用 dnf:${plain}"
+                echo -e "${cyan}dnf install -y python3 curl jq${plain}"
+                return 1
+            fi
+            
+        else
+            echo -e "\n${red}用户取消依赖安装。${plain}"
+            echo -e "${yellow}请手动安装以下依赖后重新运行脚本：${plain}"
+            echo -e "${cyan}# Ubuntu/Debian:${plain}"
+            echo -e "${cyan}apt-get update && apt-get install -y python3 curl jq${plain}"
+            echo -e "${cyan}# CentOS/RHEL:${plain}"  
+            echo -e "${cyan}yum install -y python3 curl jq${plain}"
+            echo -e "${cyan}# 或者使用 dnf:${plain}"
+            echo -e "${cyan}dnf install -y python3 curl jq${plain}"
+            return 1
+        fi
+    else
+        echo -e "${green}✅ 所有必要依赖都已安装${plain}"
+    fi
+    
+    return 0
+}
+
+# 安全的python3调用函数
+safe_python3_call() {
+    # 检查python3是否可用
+    if ! command -v python3 >/dev/null 2>&1; then
+        echo -e "${red}错误：python3 未安装或不可用${plain}"
+        echo -e "${yellow}正在尝试自动安装依赖...${plain}"
+        if ! check_and_install_dependencies; then
+            echo -e "${red}依赖安装失败，无法继续执行${plain}"
+            return 1
+        fi
+    fi
+    
+    # 执行传入的python3命令
+    python3 "$@"
+    return $?
+}
+
 # 预检查和环境探测
 pre_check() {
     # check root
@@ -686,7 +845,7 @@ update_hy2_config_path() {
     echo -e "${yellow}更新节点 ${node_id} 的配置文件路径到 ${new_config_path}...${plain}"
     
     # 使用Python更新JSON配置
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 import sys
 
@@ -903,7 +1062,7 @@ add_socks_outbound() {
     cp "$outbound_file" "${outbound_file}.backup.$(date +%Y%m%d_%H%M%S)"
     
     # 使用Python来操作JSON文件
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 import sys
 
@@ -962,7 +1121,7 @@ EOF
 get_socks_outbounds() {
     local outbound_file="/etc/V2bX/custom_outbound.json"
     
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 
 try:
@@ -989,7 +1148,7 @@ EOF
 get_vless_ss_nodes() {
     local config_file="/etc/V2bX/config.json"
     
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 import sys
 
@@ -1034,7 +1193,7 @@ generate_route_config() {
         cp "$route_file" "${route_file}.backup.$(date +%Y%m%d_%H%M%S)"
     fi
     
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 
 route_file = "$route_file"
@@ -1354,7 +1513,7 @@ fix_inbound_tags() {
     echo -e "${yellow}正在分析并修复inboundTag格式...${plain}"
     
     # 使用Python修复inboundTag格式
-    python3 << 'EOF'
+    safe_python3_call << 'EOF'
 import json
 import sys
 import os
@@ -1508,7 +1667,7 @@ remove_payment_blocks() {
     fi
     
     # 使用Python处理JSON文件
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 import re
 import sys
@@ -1658,7 +1817,7 @@ show_payment_block_status() {
         return 1
     fi
     
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 import re
 import os
@@ -1774,7 +1933,7 @@ check_and_block_ss_china() {
     
     # 先检查节点状态
     local check_result
-    check_result=$(python3 << 'EOF'
+    check_result=$(safe_python3_call << 'EOF'
 import json
 import sys
 import os
@@ -1945,7 +2104,7 @@ EOF
         echo -e "\n${yellow}正在添加中国大陆禁止规则...${plain}"
         
         # 使用Python添加规则
-        python3 << EOF
+        safe_python3_call << EOF
 import json
 import sys
 from datetime import datetime
@@ -4208,6 +4367,13 @@ show_menu() {
             setup_vless_ss_outbound
             ;;
         5)
+            # 检查并安装必要的依赖
+            echo -e "${yellow}正在检查功能所需的依赖...${plain}"
+            if ! check_and_install_dependencies; then
+                echo -e "${red}依赖检查失败，无法继续执行${plain}"
+                return 1
+            fi
+            
             # 提供子选项：查看状态、移除拦截、为SS节点添加中国大陆禁止规则，或修复inboundTag
             echo -e "\n${yellow}支付站点拦截管理与shadowsocks节点安全：${plain}"
             echo -e "  ${cyan}1.${plain} 查看当前拦截状态"
@@ -6293,7 +6459,7 @@ add_v2bx_node() {
 show_current_nodes() {
     echo -e "\n${cyan}当前V2bX节点信息：${plain}"
     
-    python3 << 'EOF'
+    safe_python3_call << 'EOF'
 import json
 import sys
 
@@ -6343,7 +6509,7 @@ EOF
 check_node_id_exists() {
     local node_id="$1"
     
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 import sys
 
@@ -6382,7 +6548,7 @@ add_xray_node() {
     echo -e "${green}已备份配置文件到：${plain}${backup_file}"
     
     # 添加节点
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 import sys
 from datetime import datetime
@@ -6488,7 +6654,7 @@ add_hysteria2_node() {
     echo -e "${green}已备份配置文件到：${plain}${backup_file}"
     
     # 添加节点
-    python3 << EOF
+    safe_python3_call << EOF
 import json
 import sys
 from datetime import datetime
