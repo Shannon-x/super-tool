@@ -1330,9 +1330,17 @@ EOF
 # 配置vless和shadowsocks节点出站规则
 setup_vless_ss_outbound() {
     echo -e "${green}=== vless和shadowsocks节点出站规则配置 ===${plain}"
+    echo -e "${yellow}说明：此功能只修改路由配置，不会修改节点配置${plain}"
+    echo -e "${cyan}将修改的文件：${plain}"
+    echo -e "  - /etc/V2bX/custom_outbound.json （出站配置）"
+    echo -e "  - /etc/V2bX/route.json （路由规则）"
+    echo -e "${cyan}不会修改：${plain}"
+    echo -e "  - /etc/V2bX/config.json （节点配置）"
     
-    # 检查配置文件
-    if ! backup_config; then
+    # 检查必要的配置文件是否存在
+    if [[ ! -f "/etc/V2bX/config.json" ]]; then
+        echo -e "${red}错误：找不到 V2bX 配置文件 /etc/V2bX/config.json${plain}"
+        echo -e "${yellow}请先安装并配置 V2bX${plain}"
         return 1
     fi
     
@@ -1494,9 +1502,13 @@ setup_vless_ss_outbound() {
     
     echo -e "\n${green}=== vless和shadowsocks节点出站规则配置完成 ===${plain}"
     echo -e "${yellow}配置文件已更新：${plain}"
-    echo -e "  - ${cyan}/etc/V2bX/custom_outbound.json${plain}"
-    echo -e "  - ${cyan}/etc/V2bX/route.json${plain}"
-    echo -e "${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
+    echo -e "  - ${cyan}/etc/V2bX/custom_outbound.json${plain} （添加了出站配置）"
+    echo -e "  - ${cyan}/etc/V2bX/route.json${plain} （添加了路由规则）"
+    echo -e "\n${green}重要说明：${plain}"
+    echo -e "  - ${cyan}本功能不会修改 config.json 文件${plain}"
+    echo -e "  - ${cyan}不会在节点配置中添加 OutboundTag 字段${plain}"
+    echo -e "  - ${cyan}所有路由规则都在 route.json 中管理${plain}"
+    echo -e "\n${yellow}提示：配置完成后，请重启 V2bX 服务使配置生效${plain}"
     echo -e "${cyan}重启命令：systemctl restart V2bX${plain}"
 }
 
