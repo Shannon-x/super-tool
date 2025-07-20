@@ -1117,8 +1117,8 @@ EOF
     fi
 }
 
-# 获取所有可用的socks出站标签
-get_socks_outbounds() {
+# 获取所有可用的出站标签（包括socks和其他类型）
+get_all_outbounds() {
     local outbound_file="/etc/V2bX/custom_outbound.json"
     
     safe_python3_call << EOF
@@ -1128,16 +1128,31 @@ try:
     with open("$outbound_file", 'r') as f:
         outbounds = json.load(f)
     
-    socks_tags = []
+    # 收集所有出站，按类型分类
+    all_tags = []
     for outbound in outbounds:
-        if outbound.get('protocol') == 'socks':
-            socks_tags.append(outbound.get('tag'))
+        tag = outbound.get('tag')
+        protocol = outbound.get('protocol')
+        if tag and protocol:
+            # 排除block出站
+            if tag != 'block':
+                all_tags.append({
+                    'tag': tag,
+                    'protocol': protocol
+                })
     
-    if socks_tags:
-        for tag in socks_tags:
-            print(f"SOCKS_TAG:{tag}")
+    if all_tags:
+        # 先输出IPv4_out和IPv6_out（优先显示）
+        for item in all_tags:
+            if item['tag'] in ['IPv4_out', 'IPv6_out']:
+                print(f"OUTBOUND_TAG:{item['tag']}:{item['protocol']}")
+        
+        # 然后输出其他出站
+        for item in all_tags:
+            if item['tag'] not in ['IPv4_out', 'IPv6_out']:
+                print(f"OUTBOUND_TAG:{item['tag']}:{item['protocol']}")
     else:
-        print("NO_SOCKS_TAGS")
+        print("NO_OUTBOUND_TAGS")
         
 except Exception as e:
     print("ERROR")
@@ -1185,7 +1200,7 @@ EOF
 # 生成路由规则
 generate_route_config() {
     local route_file="/etc/V2bX/route.json"
-    # 传入格式: "NodeID|NodeType|ApiHost|SocksTag,..."  使用 '|' 作为字段分隔符
+    # 传入格式: "NodeID|NodeType|ApiHost|OutboundTag,..."  使用 '|' 作为字段分隔符
     local node_mappings="$1"
     
     # 备份原路由文件
@@ -1206,11 +1221,11 @@ if mappings_str:
         if mapping.strip():
             parts = mapping.strip().split('|')
             if len(parts) == 4:
-                node_id, node_type, api_host, socks_tag = parts
+                node_id, node_type, api_host, outbound_tag = parts
                 node_mappings[node_id] = {
                     'type': node_type,
                     'host': api_host,
-                    'socks': socks_tag
+                    'outbound': outbound_tag
                 }
 
 # 生成路由配置
@@ -1231,7 +1246,7 @@ for node_id, info in node_mappings.items():
         }
         route_config["rules"].append(block_rule)
 
-# 为所有节点添加socks出站规则
+# 为所有节点添加出站规则
 for node_id, info in node_mappings.items():
     if info['type'] == 'shadowsocks':
         inbound_tag = f"[{info['host']}]-shadowsocks:{node_id}"
@@ -1243,7 +1258,7 @@ for node_id, info in node_mappings.items():
     route_rule = {
         "type": "field",
         "inboundTag": [inbound_tag],
-        "outboundTag": info['socks']
+        "outboundTag": info['outbound']
     }
     route_config["rules"].append(route_rule)
 
@@ -1380,33 +1395,35 @@ setup_vless_ss_outbound() {
         done
     done
     
-    echo -e "\n${yellow}=== 第二步：获取可用的socks出站 ===${plain}"
+    echo -e "\n${yellow}=== 第二步：获取可用的出站 ===${plain}"
     
-    # 获取所有socks出站
-    local socks_info
-    socks_info=$(get_socks_outbounds)
+    # 获取所有出站
+    local outbound_info
+    outbound_info=$(get_all_outbounds)
     
-    if [[ "$socks_info" == "NO_SOCKS_TAGS" ]] || [[ "$socks_info" == "ERROR" ]]; then
-        echo -e "${red}未找到任何socks出站配置${plain}"
+    if [[ "$outbound_info" == "NO_OUTBOUND_TAGS" ]] || [[ "$outbound_info" == "ERROR" ]]; then
+        echo -e "${red}未找到任何出站配置${plain}"
         return 1
     fi
     
-    # 提取socks标签
-    local socks_tags=()
+    # 提取出站标签和类型
+    local outbound_tags=()
+    local outbound_types=()
     while IFS= read -r line; do
-        if [[ "$line" =~ ^SOCKS_TAG:(.+)$ ]]; then
-            socks_tags+=("${BASH_REMATCH[1]}")
+        if [[ "$line" =~ ^OUTBOUND_TAG:([^:]+):(.+)$ ]]; then
+            outbound_tags+=("${BASH_REMATCH[1]}")
+            outbound_types+=("${BASH_REMATCH[2]}")
         fi
-    done <<< "$socks_info"
+    done <<< "$outbound_info"
     
-    if [[ ${#socks_tags[@]} -eq 0 ]]; then
-        echo -e "${red}未找到有效的socks出站标签${plain}"
+    if [[ ${#outbound_tags[@]} -eq 0 ]]; then
+        echo -e "${red}未找到有效的出站标签${plain}"
         return 1
     fi
     
-    echo -e "${green}可用的socks出站：${plain}"
-    for i in "${!socks_tags[@]}"; do
-        echo -e "  ${cyan}$((i+1)). ${socks_tags[i]}${plain}"
+    echo -e "${green}可用的出站：${plain}"
+    for i in "${!outbound_tags[@]}"; do
+        echo -e "  ${cyan}$((i+1)). ${outbound_tags[i]} (${outbound_types[i]})${plain}"
     done
     
     echo -e "\n${yellow}=== 第三步：获取vless和shadowsocks节点 ===${plain}"
@@ -1443,29 +1460,29 @@ setup_vless_ss_outbound() {
         
         echo -e "\n${purple}=== 配置节点 ${node_id} (${node_type}) ===${plain}"
         
-        # 显示可用的socks出站
-        echo -e "${cyan}可用的socks出站：${plain}"
-        for i in "${!socks_tags[@]}"; do
-            echo -e "  ${cyan}$((i+1)). ${socks_tags[i]}${plain}"
+        # 显示可用的出站
+        echo -e "${cyan}可用的出站：${plain}"
+        for i in "${!outbound_tags[@]}"; do
+            echo -e "  ${cyan}$((i+1)). ${outbound_tags[i]} (${outbound_types[i]})${plain}"
         done
         
-        # 选择socks出站
+        # 选择出站
         while true; do
-            read -rp "请选择节点 ${node_id} 使用的socks出站 (输入序号): " choice
+            read -rp "请选择节点 ${node_id} 使用的出站 (输入序号): " choice
             
-            if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#socks_tags[@]} ]]; then
-                selected_socks="${socks_tags[$((choice-1))]}"
-                echo -e "${green}节点 ${node_id} 将使用socks出站: ${selected_socks}${plain}"
+            if [[ "$choice" =~ ^[0-9]+$ ]] && [[ $choice -ge 1 ]] && [[ $choice -le ${#outbound_tags[@]} ]]; then
+                selected_outbound="${outbound_tags[$((choice-1))]}"
+                echo -e "${green}节点 ${node_id} 将使用出站: ${selected_outbound}${plain}"
                 
                 # 添加到映射
                 if [[ -n "$node_mappings" ]]; then
-                    node_mappings="${node_mappings},${node_id}|${node_type}|${api_host}|${selected_socks}"
+                    node_mappings="${node_mappings},${node_id}|${node_type}|${api_host}|${selected_outbound}"
                 else
-                    node_mappings="${node_id}|${node_type}|${api_host}|${selected_socks}"
+                    node_mappings="${node_id}|${node_type}|${api_host}|${selected_outbound}"
                 fi
                 break
             else
-                echo -e "${red}无效的选择，请输入1-${#socks_tags[@]}${plain}"
+                echo -e "${red}无效的选择，请输入1-${#outbound_tags[@]}${plain}"
             fi
         done
     done
