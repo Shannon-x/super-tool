@@ -302,6 +302,7 @@ setup_port_forwarding() {
     install_iptables_persistence
     
     local rule_count=0
+    local successful_rules=0  # 新增：记录成功应用的规则数
     local continue_setup=true
     
     while [[ "$continue_setup" == true ]]; do
@@ -369,6 +370,9 @@ setup_port_forwarding() {
         if [[ $success -ne 0 ]]; then
             ((rule_count--))
             continue
+        else
+            # 规则成功应用，增加成功计数器
+            ((successful_rules++))
         fi
         
         # 显示当前规则状态
@@ -386,14 +390,14 @@ setup_port_forwarding() {
     done
     
     # 所有规则设置完成后，进行持久化
-    if [[ $rule_count -gt 0 ]]; then
+    if [[ $successful_rules -gt 0 ]]; then
         persist_rules
         echo -e "\n${green}=== 端口转发设置完成！===${plain}"
-        echo -e "${yellow}总共设置了 ${rule_count} 条端口转发规则${plain}"
+        echo -e "${yellow}总共成功设置了 ${successful_rules} 条端口转发规则${plain}"
         echo -e "${yellow}最终PREROUTING规则列表:${plain}"
         iptables -t nat -L PREROUTING -n --line-numbers
     else
-        echo -e "\n${yellow}未设置任何端口转发规则${plain}"
+        echo -e "\n${yellow}未成功设置任何端口转发规则${plain}"
     fi
 }
 
@@ -3143,6 +3147,30 @@ get_ovpn_config() {
 # 设置独立的路由表
 setup_routing_table() {
     echo -e "${YELLOW}正在配置路由表 /etc/iproute2/rt_tables...${NC}"
+    
+    # 确保目录存在
+    if [[ ! -d /etc/iproute2 ]]; then
+        mkdir -p /etc/iproute2
+    fi
+    
+    # 如果文件不存在，创建默认内容
+    if [[ ! -f /etc/iproute2/rt_tables ]]; then
+        cat > /etc/iproute2/rt_tables << 'RTEOF'
+#
+# reserved values
+#
+255     local
+254     main
+253     default
+0       unspec
+#
+# local
+#
+#1      inr.ruhep
+RTEOF
+        echo -e "${GREEN}  -> 创建了路由表文件 /etc/iproute2/rt_tables${NC}"
+    fi
+    
     if ! grep -q "main_route" /etc/iproute2/rt_tables; then
         echo "100   main_route" >> /etc/iproute2/rt_tables
         echo -e "${GREEN}  -> 已添加路由表 '100 main_route'。${NC}"
@@ -3160,43 +3188,57 @@ create_route_scripts() {
     echo -e "${YELLOW}正在创建优化的 route-up.sh 脚本（基于源地址策略路由）...${NC}"
     cat << EOL > "$up_script"
 #!/bin/bash
+# OpenVPN route-up script
 # -- 根据您的环境自动填充的变量 --
 GATEWAY_IP="${GATEWAY_IP}"
 MAIN_IF="${MAIN_IF}"
 # -- 配置参数 --
 TABLE_ID="main_route"
 
-# 等待网络接口就绪
-sleep 5
+# 日志文件
+LOG_FILE="/var/log/openvpn-routing.log"
+
+# 记录开始
+echo "\$(date '+%Y-%m-%d %H:%M:%S') - route-up.sh 开始执行" >> "\$LOG_FILE"
+echo "参数: \$@" >> "\$LOG_FILE"
+
+# 确保日志文件可写
+touch "\$LOG_FILE" 2>/dev/null || LOG_FILE="/tmp/openvpn-routing.log"
+
+# 等待网络接口就绪（使用后台方式避免阻塞）
+(sleep 2) &
 
 # --- 第1部分：确保内核参数允许策略路由 ---
-sysctl -w net.ipv4.conf.all.rp_filter=2
-sysctl -w net.ipv4.conf.default.rp_filter=2
-sysctl -w net.ipv4.conf.\${MAIN_IF}.rp_filter=2
+sysctl -w net.ipv4.conf.all.rp_filter=2 >> "\$LOG_FILE" 2>&1
+sysctl -w net.ipv4.conf.default.rp_filter=2 >> "\$LOG_FILE" 2>&1
+sysctl -w net.ipv4.conf.\${MAIN_IF}.rp_filter=2 >> "\$LOG_FILE" 2>&1
 
 # --- 第2部分：获取服务器公网IP ---
 SERVER_IP=\$(ip -4 addr show \${MAIN_IF} | awk '/inet /{print \$2}' | cut -d/ -f1 | head -1)
 if [[ -z "\$SERVER_IP" ]]; then
-    echo "错误：无法获取服务器IP地址"
+    echo "错误：无法获取服务器IP地址" >> "\$LOG_FILE"
     exit 1
 fi
-echo "检测到服务器IP: \$SERVER_IP"
+echo "检测到服务器IP: \$SERVER_IP" >> "\$LOG_FILE"
 
 # --- 第3部分：配置策略路由 ---
 # 创建保留路由表，所有流量通过原网关
-ip route replace default via \${GATEWAY_IP} dev \${MAIN_IF} table \${TABLE_ID}
+ip route replace default via \${GATEWAY_IP} dev \${MAIN_IF} table \${TABLE_ID} >> "\$LOG_FILE" 2>&1
 
 # 源地址策略：凡是源为公网IP的包一律走保留表
 # 这确保所有入站连接的回复都通过原网关返回
-ip rule add from \${SERVER_IP}/32 table \${TABLE_ID} prio 100
+ip rule add from \${SERVER_IP}/32 table \${TABLE_ID} prio 100 >> "\$LOG_FILE" 2>&1
 
 # --- 第4部分：刷新路由缓存 ---
 ip route flush cache
 
-echo "策略路由设置完成："
-echo "- 服务器IP: \$SERVER_IP"
-echo "- 所有从 \$SERVER_IP 发出的流量将通过原网关(\${GATEWAY_IP})路由"
-echo "- 其他流量将通过VPN路由"
+echo "策略路由设置完成：" >> "\$LOG_FILE"
+echo "- 服务器IP: \$SERVER_IP" >> "\$LOG_FILE"
+echo "- 所有从 \$SERVER_IP 发出的流量将通过原网关(\${GATEWAY_IP})路由" >> "\$LOG_FILE"
+echo "- 其他流量将通过VPN路由" >> "\$LOG_FILE"
+
+# 记录完成
+echo "\$(date '+%Y-%m-%d %H:%M:%S') - route-up.sh 执行完成" >> "\$LOG_FILE"
 
 exit 0
 EOL
@@ -3293,11 +3335,15 @@ restart_and_verify_openvpn() {
         return 1
     fi
     
-    echo -e "${yellow}实时输出 OpenVPN 日志 (15 秒)...${plain}"
-    journalctl -fu openvpn-client@${OVPN_SERVICE_NAME}.service --since "now" &
-    local jpid=$!
-    sleep 15
-    kill $jpid >/dev/null 2>&1
+    echo -e "${yellow}输出最近的 OpenVPN 日志...${plain}"
+    # 使用timeout命令自动超时，避免卡住
+    timeout 15 journalctl -u openvpn-client@${OVPN_SERVICE_NAME}.service -n 50 --no-pager || true
+    
+    # 如果存在路由脚本日志，也显示
+    if [[ -f /var/log/openvpn-routing.log ]]; then
+        echo -e "\n${yellow}路由脚本日志：${plain}"
+        tail -n 20 /var/log/openvpn-routing.log
+    fi
      
     # 检查服务状态
     echo -e "\n${YELLOW}检查服务状态:${NC}"
